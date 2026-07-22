@@ -13,7 +13,7 @@ datastore = "1.1.1"
 navigation = "2.8.5"
 lifecycle = "2.8.7"
 ksp = "2.3.2"
-healthConnect = "1.2.0"
+healthConnect = "1.1.0"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -43,4 +43,3 @@ androidx-health-connect-client = { group = "androidx.health.connect", name = "co
 android-application = { id = "com.android.application", version.ref = "agp" }
 kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
 ksp = { id = "com.google.devtools.ksp", version.ref = "ksp" }
-
