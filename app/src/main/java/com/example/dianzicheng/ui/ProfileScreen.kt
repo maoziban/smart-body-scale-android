@@ -1,12 +1,16 @@
 package com.example.dianzicheng.ui
 
+import android.content.Intent
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.health.connect.client.PermissionController
 import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -16,12 +20,20 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import com.example.dianzicheng.data.local.AppLogger
 import com.example.dianzicheng.domain.FamilyMember
 import com.example.dianzicheng.domain.Sex
 import com.example.dianzicheng.ui.theme.电子秤Theme
@@ -39,6 +51,11 @@ fun ProfileContent(
     healthConnectEnabled: Boolean,
     onToggleHealthConnect: (Boolean) -> Unit,
     onRequestHealthConnectPermissions: () -> Unit,
+    onBatchSyncToHealthConnect: () -> Unit,
+    onOpenMiHealth: () -> Unit,
+    onOpenHealthConnectSettings: () -> Unit,
+    syncProgress: String?,
+    isMiHealthInstalled: Boolean,
     webdavUrl: String,
     webdavUsername: String,
     webdavPassword: String,
@@ -48,10 +65,14 @@ fun ProfileContent(
     onBackupData: () -> Unit,
     onRestoreData: () -> Unit,
     isOperating: Boolean,
+    logEntries: List<AppLogger.LogEntry> = emptyList(),
+    onClearLogs: () -> Unit = {},
+    onShareLogs: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     var showAddDialog by remember { mutableStateOf(false) }
     var showWebdavDialog by remember { mutableStateOf(false) }
+    var showLogDialog by remember { mutableStateOf(false) }
 
     val dateFormat = remember { SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()) }
 
@@ -178,6 +199,102 @@ fun ProfileContent(
                 }
             }
 
+            // Xiaomi Health Section
+            item {
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = "导入小米健康 (Mi Health)",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
+
+            item {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f))
+                ) {
+                    // 说明栏
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 20.dp, vertical = 14.dp),
+                        verticalAlignment = Alignment.Top
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(40.dp)
+                                .clip(CircleShape)
+                                .background(androidx.compose.ui.graphics.Color(0xFFFF6900).copy(alpha = 0.15f)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                Icons.Default.FavoriteBorder,
+                                contentDescription = null,
+                                modifier = Modifier.size(20.dp),
+                                tint = androidx.compose.ui.graphics.Color(0xFFFF6900)
+                            )
+                        }
+                        Spacer(modifier = Modifier.width(16.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "同步历史数据到小米健康",
+                                style = MaterialTheme.typography.bodyLarge,
+                                fontWeight = FontWeight.Medium
+                            )
+                            Text(
+                                text = "小米健康通过 Health Connect 读取数据。请先开启上方\"同步至系统健康\"并授权，再点击\"立即同步\"将全部历史记录一键导入小米健康。",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            if (syncProgress != null) {
+                                Spacer(modifier = Modifier.height(8.dp))
+                                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text(
+                                    text = syncProgress,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            }
+                        }
+                    }
+                    HorizontalDivider(
+                        modifier = Modifier.padding(horizontal = 16.dp),
+                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+                    )
+                    SettingsItem(
+                        title = "立即同步全部历史数据",
+                        subtitle = "体重与体脂写入 Health Connect，小米健康可直接读取",
+                        icon = Icons.Default.CloudSync,
+                        onClick = onBatchSyncToHealthConnect,
+                        isLoading = syncProgress != null
+                    )
+                    HorizontalDivider(
+                        modifier = Modifier.padding(horizontal = 16.dp),
+                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+                    )
+                    SettingsItem(
+                        title = if (isMiHealthInstalled) "打开小米健康" else "安装小米健康",
+                        subtitle = "在小米健康 > 设置 > 数据来源 中启用 Health Connect",
+                        icon = Icons.Default.OpenInNew,
+                        onClick = onOpenMiHealth
+                    )
+                    HorizontalDivider(
+                        modifier = Modifier.padding(horizontal = 16.dp),
+                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+                    )
+                    SettingsItem(
+                        title = "管理 Health Connect 权限",
+                        icon = Icons.Default.ManageAccounts,
+                        onClick = onOpenHealthConnectSettings
+                    )
+                }
+            }
+
             // WebDAV Backup Section
             item {
                 Spacer(modifier = Modifier.height(8.dp))
@@ -253,8 +370,18 @@ fun ProfileContent(
                         color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
                     )
                     SettingsItem(
+                        title = "查看运行日志",
+                        subtitle = if (logEntries.isEmpty()) "暂无日志" else "共 ${logEntries.size} 条记录",
+                        icon = Icons.Default.Article,
+                        onClick = { showLogDialog = true }
+                    )
+                    HorizontalDivider(
+                        modifier = Modifier.padding(horizontal = 16.dp),
+                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+                    )
+                    SettingsItem(
                         title = "关于软件",
-                        subtitle = "版本 1.2",
+                        subtitle = "版本 1.3.7",
                         icon = Icons.Default.Info,
                         onClick = { }
                     )
@@ -265,6 +392,15 @@ fun ProfileContent(
                 Spacer(modifier = Modifier.height(40.dp))
             }
         }
+    }
+
+    if (showLogDialog) {
+        LogViewerDialog(
+            entries = logEntries,
+            onDismiss = { showLogDialog = false },
+            onClear = onClearLogs,
+            onShare = onShareLogs
+        )
     }
 
     if (showAddDialog) {
@@ -353,6 +489,171 @@ fun SettingsItem(
                 tint = MaterialTheme.colorScheme.outline
             )
         }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun LogViewerDialog(
+    entries: List<AppLogger.LogEntry>,
+    onDismiss: () -> Unit,
+    onClear: () -> Unit,
+    onShare: () -> Unit
+) {
+    val context = LocalContext.current
+    val clipboardManager = LocalClipboardManager.current
+    val listState = rememberLazyListState()
+    val timeFmt = remember { SimpleDateFormat("HH:mm:ss.SSS", Locale.getDefault()) }
+
+    // 每次有新日志时自动滚动到最底部
+    LaunchedEffect(entries.size) {
+        if (entries.isNotEmpty()) {
+            listState.animateScrollToItem(entries.size - 1)
+        }
+    }
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Scaffold(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(top = 32.dp),
+            topBar = {
+                TopAppBar(
+                    title = {
+                        Column {
+                            Text("运行日志", fontWeight = FontWeight.Bold)
+                            Text(
+                                "${entries.size} 条记录",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    },
+                    navigationIcon = {
+                        IconButton(onClick = onDismiss) {
+                            Icon(Icons.Default.Close, contentDescription = "关闭")
+                        }
+                    },
+                    actions = {
+                        IconButton(onClick = {
+                            val text = AppLogger.exportText()
+                            clipboardManager.setText(AnnotatedString(text))
+                            Toast.makeText(context, "已复制全部日志", Toast.LENGTH_SHORT).show()
+                        }) {
+                            Icon(Icons.Default.ContentCopy, contentDescription = "复制")
+                        }
+                        IconButton(onClick = {
+                            val text = AppLogger.exportText()
+                            val intent = Intent(Intent.ACTION_SEND).apply {
+                                type = "text/plain"
+                                putExtra(Intent.EXTRA_TEXT, text)
+                                putExtra(Intent.EXTRA_SUBJECT, "AppLog")
+                            }
+                            context.startActivity(Intent.createChooser(intent, "分享日志"))
+                        }) {
+                            Icon(Icons.Default.Share, contentDescription = "分享")
+                        }
+                        IconButton(onClick = onClear) {
+                            Icon(Icons.Default.Delete, contentDescription = "清空")
+                        }
+                    },
+                    colors = TopAppBarDefaults.topAppBarColors(
+                        containerColor = MaterialTheme.colorScheme.surface
+                    )
+                )
+            }
+        ) { innerPadding ->
+            if (entries.isEmpty()) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(innerPadding),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Icon(
+                            Icons.Default.Article,
+                            contentDescription = null,
+                            modifier = Modifier.size(48.dp),
+                            tint = MaterialTheme.colorScheme.outlineVariant
+                        )
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Text(
+                            "暂无日志",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            } else {
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(innerPadding)
+                        .background(MaterialTheme.colorScheme.surface),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                ) {
+                    items(entries, key = { "${it.timestamp}_${it.message.hashCode()}" }) { entry ->
+                        LogEntryRow(entry = entry, timeFmt = timeFmt)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun LogEntryRow(
+    entry: AppLogger.LogEntry,
+    timeFmt: SimpleDateFormat
+) {
+    val (levelColor, levelBg) = when (entry.level) {
+        AppLogger.Level.DEBUG -> MaterialTheme.colorScheme.onSurfaceVariant to Color.Transparent
+        AppLogger.Level.INFO  -> Color(0xFF2196F3) to Color(0xFF2196F3).copy(alpha = 0.07f)
+        AppLogger.Level.WARN  -> Color(0xFFFF9800) to Color(0xFFFF9800).copy(alpha = 0.07f)
+        AppLogger.Level.ERROR -> MaterialTheme.colorScheme.error to MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.15f)
+    }
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(4.dp))
+            .background(levelBg)
+            .padding(horizontal = 8.dp, vertical = 4.dp),
+        verticalAlignment = Alignment.Top
+    ) {
+        Text(
+            text = timeFmt.format(Date(entry.timestamp)),
+            fontSize = 10.sp,
+            fontFamily = FontFamily.Monospace,
+            color = MaterialTheme.colorScheme.outline,
+            modifier = Modifier.padding(top = 1.dp)
+        )
+        Spacer(modifier = Modifier.width(6.dp))
+        Text(
+            text = entry.level.name.take(1),
+            fontSize = 10.sp,
+            fontFamily = FontFamily.Monospace,
+            fontWeight = FontWeight.Bold,
+            color = levelColor,
+            modifier = Modifier.padding(top = 1.dp)
+        )
+        Spacer(modifier = Modifier.width(6.dp))
+        Text(
+            text = "[${entry.tag}] ${entry.message}",
+            fontSize = 11.sp,
+            fontFamily = FontFamily.Monospace,
+            color = if (entry.level == AppLogger.Level.DEBUG)
+                MaterialTheme.colorScheme.onSurfaceVariant
+            else
+                MaterialTheme.colorScheme.onSurface,
+            modifier = Modifier.weight(1f)
+        )
     }
 }
 
@@ -572,6 +873,8 @@ fun ProfileScreen(
     val lastBackupTime by viewModel.lastBackupTime.collectAsState()
     val isOperating by viewModel.isOperating.collectAsState()
     val statusMessage by viewModel.statusMessage.collectAsState()
+    val syncProgress by viewModel.syncProgress.collectAsState()
+    val logEntries by viewModel.logEntries.collectAsState()
 
     val permissionLauncher = rememberLauncherForActivityResult(
         contract = PermissionController.createRequestPermissionResultContract()
@@ -623,6 +926,11 @@ fun ProfileScreen(
                 Toast.makeText(context, "当前设备不支持或未安装 Health Connect", Toast.LENGTH_SHORT).show()
             }
         },
+        onBatchSyncToHealthConnect = { viewModel.batchSyncToHealthConnect() },
+        onOpenMiHealth = { viewModel.openMiHealth() },
+        onOpenHealthConnectSettings = { viewModel.openHealthConnectSettings() },
+        syncProgress = syncProgress,
+        isMiHealthInstalled = viewModel.isMiHealthInstalled(),
         webdavUrl = webdavUrl,
         webdavUsername = webdavUsername,
         webdavPassword = webdavPassword,
@@ -632,6 +940,18 @@ fun ProfileScreen(
         onBackupData = { viewModel.backupData() },
         onRestoreData = { viewModel.restoreData() },
         isOperating = isOperating,
+        logEntries = logEntries,
+        onClearLogs = { viewModel.clearLogs() },
+        onShareLogs = {
+            val text = viewModel.exportLogsText()
+            val intent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+                type = "text/plain"
+                putExtra(android.content.Intent.EXTRA_TEXT, text)
+                putExtra(android.content.Intent.EXTRA_SUBJECT, "AppLog")
+            }
+            context.startActivity(android.content.Intent.createChooser(intent, "分享日志"))
+        },
         modifier = modifier
     )
 }
+

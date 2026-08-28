@@ -76,6 +76,9 @@ class MainActivity : ComponentActivity() {
         lifecycleScope.launch {
             preferenceManager.pairedMac.collect { mac ->
                 bleClient.lastPairedMac = mac  // null clears memory, preventing stale reconnect
+                if (mac.isNullOrEmpty()) {
+                    bleClient.disconnectAndReset()
+                }
             }
         }
 
@@ -94,14 +97,20 @@ class MainActivity : ComponentActivity() {
                 val historyViewModel: HistoryViewModel = viewModel(
                     factory = object : ViewModelProvider.Factory {
                         override fun <T : ViewModel> create(modelClass: Class<T>): T {
-                            return HistoryViewModel(scaleRepository) as T
+                            return HistoryViewModel(scaleRepository, preferenceManager, healthConnectManager) as T
                         }
                     }
                 )
                 val profileViewModel: ProfileViewModel = viewModel(
                     factory = object : ViewModelProvider.Factory {
                         override fun <T : ViewModel> create(modelClass: Class<T>): T {
-                            return ProfileViewModel(profileRepository, preferenceManager, webDavManager, healthConnectManager) as T
+                            return ProfileViewModel(
+                                profileRepository,
+                                preferenceManager,
+                                webDavManager,
+                                healthConnectManager,
+                                scaleRepository
+                            ) as T
                         }
                     }
                 )

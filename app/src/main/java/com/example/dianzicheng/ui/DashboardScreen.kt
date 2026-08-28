@@ -7,6 +7,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -39,6 +41,25 @@ fun DashboardContent(
     modifier: Modifier = Modifier
 ) {
     var showMemberSelectDialog by remember { mutableStateOf(false) }
+    var hasAutoPromptedForMeasId by remember { mutableStateOf<String?>(null) }
+
+    var lastStableState by remember { mutableStateOf(false) }
+
+    // 测量完全结束后（锁定完成并下秤），自动弹出成员匹配弹窗，不在测量过程中打扰用户
+    LaunchedEffect(uiState.isStable, uiState.currentMeasurement?.id) {
+        val currentMeas = uiState.currentMeasurement
+        if (lastStableState && !uiState.isStable && currentMeas != null && currentMeas.id != hasAutoPromptedForMeasId) {
+            hasAutoPromptedForMeasId = currentMeas.id
+            if (uiState.availableMembers.isNotEmpty()) {
+                showMemberSelectDialog = true
+            }
+        }
+        if (uiState.isStable) {
+            lastStableState = true
+        } else if (currentMeas == null) {
+            lastStableState = false
+        }
+    }
 
     Scaffold(
         topBar = {
@@ -55,10 +76,11 @@ fun DashboardContent(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding)
+                .verticalScroll(rememberScrollState())
                 .padding(horizontal = 24.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            Spacer(modifier = Modifier.height(16.dp))
+            Spacer(modifier = Modifier.height(12.dp))
 
             // Member Selector Chip
             Surface(
@@ -99,17 +121,21 @@ fun DashboardContent(
                 }
             }
 
-            Spacer(modifier = Modifier.height(16.dp))
+            Spacer(modifier = Modifier.height(12.dp))
 
             // Connection Status Chip
             ConnectionStatusChip(uiState.connection)
 
-            Spacer(modifier = Modifier.weight(1f))
+            Spacer(modifier = Modifier.height(16.dp))
 
             // Weight Display with modern circle
-            WeightDisplay(uiState.liveWeightKg, uiState.isStable)
+            WeightDisplay(
+                weight = uiState.liveWeightKg,
+                isStable = uiState.isStable,
+                isCompact = uiState.currentMeasurement != null
+            )
 
-            Spacer(modifier = Modifier.weight(1f))
+            Spacer(modifier = Modifier.height(16.dp))
 
             // Metrics Card
             AnimatedVisibility(
@@ -126,7 +152,7 @@ fun DashboardContent(
                 }
             }
 
-            Spacer(modifier = Modifier.height(24.dp))
+            Spacer(modifier = Modifier.height(16.dp))
 
             // Action Button
             if (uiState.connection == BleScaleClient.ConnectionState.IDLE) {
@@ -222,7 +248,7 @@ fun ConnectionStatusChip(state: BleScaleClient.ConnectionState) {
 }
 
 @Composable
-fun WeightDisplay(weight: Double, isStable: Boolean) {
+fun WeightDisplay(weight: Double, isStable: Boolean, isCompact: Boolean = false) {
     val infiniteTransition = rememberInfiniteTransition()
     val alpha by infiniteTransition.animateFloat(
         initialValue = 1f,
@@ -233,9 +259,12 @@ fun WeightDisplay(weight: Double, isStable: Boolean) {
         )
     )
 
+    val size = if (isCompact) 180.dp else 240.dp
+    val fontSize = if (isCompact) 60.sp else 76.sp
+
     Box(
         modifier = Modifier
-            .size(260.dp)
+            .size(size)
             .background(
                 brush = Brush.radialGradient(
                     colors = listOf(
@@ -249,13 +278,13 @@ fun WeightDisplay(weight: Double, isStable: Boolean) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
             Text(
                 text = String.format("%.2f", weight),
-                fontSize = 76.sp,
+                fontSize = fontSize,
                 fontWeight = FontWeight.Black,
                 color = MaterialTheme.colorScheme.onBackground.copy(alpha = if (weight > 0) alpha else 0.3f)
             )
             Text(
                 text = "kg",
-                fontSize = 24.sp,
+                fontSize = if (isCompact) 20.sp else 24.sp,
                 fontWeight = FontWeight.Medium,
                 color = MaterialTheme.colorScheme.primary
             )
@@ -294,7 +323,7 @@ fun MeasurementResultCard(
                     )
                     Spacer(modifier = Modifier.width(6.dp))
                     Text(
-                        text = "数据所属: ${measurement.memberNameSnapshot ?: "智能匹配中"}",
+                        text = "数据所属: ${measurement.memberNameSnapshot ?: "未绑定成员"}",
                         style = MaterialTheme.typography.bodyMedium,
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.onSurface
@@ -314,26 +343,28 @@ fun MeasurementResultCard(
 
             Spacer(modifier = Modifier.height(16.dp))
 
+            val hasBia = measurement.impedanceOhm > 0.0 && measurement.bodyFatPct > 0.0
+
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceAround
             ) {
                 MetricItem(
                     label = "BMI",
-                    value = String.format("%.1f", measurement.bmi),
-                    status = getBmiStatus(measurement.bmi),
+                    value = if (measurement.bmi > 0.0) String.format("%.1f", measurement.bmi) else "--",
+                    status = if (measurement.bmi > 0.0) getBmiStatus(measurement.bmi) else null,
                     modifier = Modifier.weight(1f)
                 )
                 MetricItem(
                     label = "体脂率",
-                    value = String.format("%.1f%%", measurement.bodyFatPct),
-                    status = getFatStatus(measurement.bodyFatPct),
+                    value = if (hasBia) String.format("%.1f%%", measurement.bodyFatPct) else "--",
+                    status = if (hasBia) getFatStatus(measurement.bodyFatPct) else null,
                     modifier = Modifier.weight(1f)
                 )
                 MetricItem(
                     label = "水分",
-                    value = String.format("%.1f%%", measurement.waterPct),
-                    status = if (measurement.waterPct in 50.0..65.0) "标准" else "注意",
+                    value = if (hasBia) String.format("%.1f%%", measurement.waterPct) else "--",
+                    status = if (hasBia && measurement.waterPct in 50.0..65.0) "标准" else if (hasBia) "注意" else null,
                     modifier = Modifier.weight(1f)
                 )
             }
@@ -342,16 +373,20 @@ fun MeasurementResultCard(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceAround
             ) {
-                MetricItem("肌肉量", String.format("%.1fkg", measurement.muscleKg), modifier = Modifier.weight(1f))
-                MetricItem("蛋白质", String.format("%.1f%%", measurement.proteinPct), modifier = Modifier.weight(1f))
-                MetricItem("骨量", String.format("%.1fkg", measurement.boneMassKg), modifier = Modifier.weight(1f))
+                MetricItem("肌肉量", if (hasBia) String.format("%.1fkg", measurement.muscleKg) else "--", modifier = Modifier.weight(1f))
+                MetricItem("蛋白质", if (hasBia) String.format("%.1f%%", measurement.proteinPct) else "--", modifier = Modifier.weight(1f))
+                MetricItem("骨量", if (hasBia) String.format("%.1fkg", measurement.boneMassKg) else "--", modifier = Modifier.weight(1f))
             }
             Spacer(modifier = Modifier.height(16.dp))
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceAround
             ) {
-                MetricItem("阻抗", "${measurement.impedanceOhm.toInt()}Ω", modifier = Modifier.weight(1f))
+                MetricItem(
+                    label = "阻抗",
+                    value = if (measurement.impedanceOhm > 0.0) "${measurement.impedanceOhm.toInt()}Ω" else "未测出 (请赤脚称重)",
+                    modifier = Modifier.weight(1f)
+                )
             }
         }
     }

@@ -79,14 +79,12 @@ fun MainScreen(
                 route = "detail/{id}",
                 arguments = listOf(navArgument("id") { type = NavType.StringType })
             ) { backStackEntry ->
-                val id = backStackEntry.arguments?.getString("id")
-                val measurement = historyViewModel.history.collectAsState().value.find { it.id == id }
-                if (measurement != null) {
-                    MeasurementDetailScreen(
-                        measurement = measurement,
-                        onBack = { navController.popBackStack() }
-                    )
-                }
+                val id = backStackEntry.arguments?.getString("id") ?: ""
+                MeasurementDetailScreen(
+                    measurementId = id,
+                    viewModel = historyViewModel,
+                    onNavigateBack = { navController.popBackStack() }
+                )
             }
         }
     }
