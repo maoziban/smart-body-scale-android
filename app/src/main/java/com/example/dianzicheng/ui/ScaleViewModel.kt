@@ -101,10 +101,10 @@ class ScaleViewModel(
     /** 最近一次体重归零的时刻，用于判断再次锁定是否为短时续接 */
     private var lastWeightZeroMs = 0L
 
-    companion object {
-        /** 在秤时长低于该值且未测得阻抗时视为无效测量（短暂踩秤、误触），不写入历史 */
-        private const val MIN_MEASUREMENT_DURATION_MS = 3000L
+    /** 体重不稳定时的延迟清空会话 Job，重新稳定时取消该任务以防误清空 */
+    private var clearSessionJob: Job? = null
 
+    companion object {
         /** 归零后该时间窗口内重新锁定且体重接近，仍视为同一次称重（覆盖瞬时抖动） */
         private const val CONTINUATION_AFTER_ZERO_GRACE_MS = 2500L
 
@@ -181,6 +181,7 @@ class ScaleViewModel(
                         selectedMember = member
                     )
                 }
+                scheduleHealthSync(boundResult)
             } catch (e: Exception) {
                 android.util.Log.e("ScaleViewModel", "Error binding measurement to member", e)
             }
@@ -237,32 +238,12 @@ class ScaleViewModel(
                         _uiState.update { it.copy(currentMeasurement = null) }
                     }
                 } else if (weight <= 0.0) {
-                    // 体重归零，说明用户已离秤：对尚未写库的会话做有效性校验
+                    // 体重归零，说明用户已离秤：若当前会话尚未写库则兜底提交
                     val sessionId = activeSessionId ?: lastLockedSessionId
                     if (sessionId != null && !sessionCommitted) {
-                        val onScaleMs = if (stepOnTimeMs > 0) System.currentTimeMillis() - stepOnTimeMs else 0L
-                        if (onScaleMs >= MIN_MEASUREMENT_DURATION_MS) {
-                            // 在秤时间足够：视为一次有效称重，此时才写入数据库
-                            AppLogger.i(TAG, "下秤，提交本次测量: 在秤 ${onScaleMs}ms, sessionId=${sessionId.take(8)}")
-                            sessionCommitted = true
-                            processMeasurement(sessionId, getSessionTimestamp(), commitToDb = true)
-                        } else {
-                            // 短暂踩秤/误触/放物品即离开：丢弃，不写入历史
-                            AppLogger.i(TAG, "在秤时间过短 (${onScaleMs}ms)，丢弃本次测量不写库")
-                            // 无论是否已写库，都尝试撤销（阻抗可能已抢先写库，如赤脚瞬时接触）
-                            val committedId = sessionId
-                            viewModelScope.launch {
-                                try {
-                                    repository.deleteMeasurementById(committedId)
-                                } catch (e: Exception) {
-                                    AppLogger.e(TAG, "撤销短时测量记录失败: ${e.message}")
-                                }
-                            }
-                            healthSyncJob?.cancel()
-                            sessionCommitted = false
-                            lastLockedSessionId = null
-                            _uiState.update { it.copy(currentMeasurement = null) }
-                        }
+                        AppLogger.i(TAG, "下秤，兜底提交本次测量: sessionId=${sessionId.take(8)}")
+                        sessionCommitted = true
+                        processMeasurement(sessionId, getSessionTimestamp(), commitToDb = true)
                     }
                     activeSessionId = null
                     hasAlertedForCurrentSession = false
@@ -289,6 +270,7 @@ class ScaleViewModel(
             bleClient.isStable.collect { stable ->
                 _uiState.update { it.copy(isStable = stable) }
                 if (stable) {
+                    clearSessionJob?.cancel()
                     val w = bleClient.weight.value
                     if (w >= 3.0) {
                         // 归零后极短时间内重新锁定且体重接近：仍属同一次称重
@@ -305,11 +287,11 @@ class ScaleViewModel(
                             currentLockedWeightKg = w
                             if (interruptionWithinGrace) sessionInterrupted = false
                             AppLogger.i(TAG, "体重再次稳定(同一会话): ${String.format("%.2f", w)} kg, sessionId=${sessionId.take(8)}")
-                            // 会话已写库（如阻抗已到）才同步更新数据库，否则仅更新内存与 UI
+                            // 同一会话体重微调，同步更新持久化记录
                             processMeasurement(
                                 sessionId = sessionId,
                                 timestamp = getSessionTimestamp(),
-                                commitToDb = sessionCommitted
+                                commitToDb = true
                             )
                         } else {
                             currentLockedWeightKg = w
@@ -320,23 +302,25 @@ class ScaleViewModel(
                             activeSessionTimestamp = System.currentTimeMillis()
                             sessionInterrupted = false
                             sessionCommitted = false
-                            // 锁定时不写库：等阻抗到达或下秤校验通过后再提交，
-                            // 避免短暂踩秤产生无关历史记录
+                            // 锁定时立即写入数据库，确保穿袜、普通秤、老人小孩等无阻抗场景也能及时安全持久化
                             processMeasurement(
                                 sessionId = newSessionId,
                                 timestamp = activeSessionTimestamp,
-                                commitToDb = false
+                                commitToDb = true
                             )
                         }
                     }
                 } else {
                     // 体重不稳定：延迟 300ms 后清空 activeSessionId，
-                    // 给可能延迟到达的阻抗数据留出补充写入的窗口期
-                    // 注意：用独立协程异步延迟，不阻塞 collect 协程（避免事件积压）
-                    viewModelScope.launch {
+                    // 给可能延迟到达的阻抗数据留出补充写入的窗口期。
+                    // 使用受管协程句柄，避免新稳定事件被先前的延迟任务误销毁。
+                    clearSessionJob?.cancel()
+                    clearSessionJob = viewModelScope.launch {
                         delay(300)
-                        activeSessionId = null
-                        hasAlertedForCurrentSession = false
+                        if (!_uiState.value.isStable) {
+                            activeSessionId = null
+                            hasAlertedForCurrentSession = false
+                        }
                     }
                 }
             }

@@ -45,12 +45,12 @@ fun DashboardContent(
 
     var lastStableState by remember { mutableStateOf(false) }
 
-    // 测量完全结束后（锁定完成并下秤），自动弹出成员匹配弹窗，不在测量过程中打扰用户
+    // 测量完全结束后（锁定完成并下秤），若当前测量未匹配到成员且有多个成员可选，自动弹出成员匹配弹窗
     LaunchedEffect(uiState.isStable, uiState.currentMeasurement?.id) {
         val currentMeas = uiState.currentMeasurement
         if (lastStableState && !uiState.isStable && currentMeas != null && currentMeas.id != hasAutoPromptedForMeasId) {
             hasAutoPromptedForMeasId = currentMeas.id
-            if (uiState.availableMembers.isNotEmpty()) {
+            if (uiState.selectedMember == null && currentMeas.memberId == null && uiState.availableMembers.size > 1) {
                 showMemberSelectDialog = true
             }
         }
@@ -65,7 +65,7 @@ fun DashboardContent(
         topBar = {
             CenterAlignedTopAppBar(
                 title = { Text("体重秤", fontWeight = FontWeight.Bold) },
-                colors = TopAppBarDefaults.centerAlignedTopAppBarColors(
+                colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = Color.Transparent
                 )
             )

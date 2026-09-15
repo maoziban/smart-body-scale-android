@@ -97,6 +97,7 @@ class MainActivity : ComponentActivity() {
             电子秤Theme {
                 val scaleViewModel: ScaleViewModel = viewModel(
                     factory = object : ViewModelProvider.Factory {
+                        @Suppress("UNCHECKED_CAST")
                         override fun <T : ViewModel> create(modelClass: Class<T>): T {
                             return ScaleViewModel(bleClient, scaleRepository, preferenceManager, healthConnectManager) as T
                         }
@@ -104,6 +105,7 @@ class MainActivity : ComponentActivity() {
                 )
                 val historyViewModel: HistoryViewModel = viewModel(
                     factory = object : ViewModelProvider.Factory {
+                        @Suppress("UNCHECKED_CAST")
                         override fun <T : ViewModel> create(modelClass: Class<T>): T {
                             return HistoryViewModel(scaleRepository, preferenceManager, healthConnectManager) as T
                         }
@@ -111,6 +113,7 @@ class MainActivity : ComponentActivity() {
                 )
                 val profileViewModel: ProfileViewModel = viewModel(
                     factory = object : ViewModelProvider.Factory {
+                        @Suppress("UNCHECKED_CAST")
                         override fun <T : ViewModel> create(modelClass: Class<T>): T {
                             return ProfileViewModel(
                                 profileRepository,
@@ -143,8 +146,6 @@ class MainActivity : ComponentActivity() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             permissions.add(Manifest.permission.BLUETOOTH_SCAN)
             permissions.add(Manifest.permission.BLUETOOTH_CONNECT)
-            permissions.add(Manifest.permission.ACCESS_FINE_LOCATION)
-            permissions.add(Manifest.permission.ACCESS_COARSE_LOCATION)
         } else {
             permissions.add(Manifest.permission.ACCESS_FINE_LOCATION)
             permissions.add(Manifest.permission.ACCESS_COARSE_LOCATION)

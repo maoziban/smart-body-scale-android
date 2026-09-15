@@ -172,8 +172,6 @@ class BleScaleClient(private val context: Context) {
         // 尝试从多个来源获取设备名称（优先系统缓存，其次广播字段，最后手动解析）
         val deviceName = device.name ?: scanRecord?.deviceName ?: parseNameFromBytes(rawBytes)
 
-        AppLogger.d(TAG, "扫描中... 发现设备: '$deviceName' [${device.address}] UUIDs: $serviceUuids")
-
         // 1. 已配对过的 MAC 地址精确匹配
         val isMatchedMac = !lastPairedMac.isNullOrEmpty() && device.address.equals(lastPairedMac, ignoreCase = true)
         if (isMatchedMac) return true
@@ -688,6 +686,9 @@ class BleScaleClient(private val context: Context) {
             _weight.value = 0.0
             _isStable.value = false
             _impedance.value = 0.0
+            if (_connectionState.value == ConnectionState.MEASURING) {
+                _connectionState.value = ConnectionState.CONNECTED
+            }
         }
         inactivityRunnable = watchdog
         handler.postDelayed(watchdog, 2500)  // 2500ms 无数据则认为用户已下秤
@@ -703,8 +704,8 @@ class BleScaleClient(private val context: Context) {
                     // 体重稳定锁定后切换到测量状态，通知 UI 开始体成分计算
                     _connectionState.value = ConnectionState.MEASURING
                 }
-            } else {
-                // 体重为 0 时清除稳定标志和阻抗
+            } else if (result.weightKg <= 0.0 && result.impedanceOhm == null) {
+                // 仅当体重为 0 且无阻抗数据时，才清除稳定标志和阻抗
                 _isStable.value = false
                 _impedance.value = 0.0
             }

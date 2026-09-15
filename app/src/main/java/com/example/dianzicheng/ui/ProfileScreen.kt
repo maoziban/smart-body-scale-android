@@ -14,6 +14,9 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowForward
+import androidx.compose.material.icons.automirrored.filled.Article
+import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -280,7 +283,7 @@ fun ProfileContent(
                     SettingsItem(
                         title = if (isMiHealthInstalled) "打开小米健康" else "安装小米健康",
                         subtitle = "在小米健康 > 设置 > 数据来源 中启用 Health Connect",
-                        icon = Icons.Default.OpenInNew,
+                        icon = Icons.AutoMirrored.Filled.OpenInNew,
                         onClick = onOpenMiHealth
                     )
                     HorizontalDivider(
@@ -372,7 +375,7 @@ fun ProfileContent(
                     SettingsItem(
                         title = "查看运行日志",
                         subtitle = if (logEntries.isEmpty()) "暂无日志" else "共 ${logEntries.size} 条记录",
-                        icon = Icons.Default.Article,
+                        icon = Icons.AutoMirrored.Filled.Article,
                         onClick = { showLogDialog = true }
                     )
                     HorizontalDivider(
@@ -483,7 +486,7 @@ fun SettingsItem(
                 }
             }
             Icon(
-                Icons.Default.ArrowForward,
+                Icons.AutoMirrored.Filled.ArrowForward,
                 contentDescription = null,
                 modifier = Modifier.size(16.dp),
                 tint = MaterialTheme.colorScheme.outline
@@ -501,6 +504,7 @@ fun LogViewerDialog(
     onShare: () -> Unit
 ) {
     val context = LocalContext.current
+    @Suppress("DEPRECATION")
     val clipboardManager = LocalClipboardManager.current
     val listState = rememberLazyListState()
     val timeFmt = remember { SimpleDateFormat("HH:mm:ss.SSS", Locale.getDefault()) }
@@ -575,7 +579,7 @@ fun LogViewerDialog(
                 ) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         Icon(
-                            Icons.Default.Article,
+                            Icons.AutoMirrored.Filled.Article,
                             contentDescription = null,
                             modifier = Modifier.size(48.dp),
                             tint = MaterialTheme.colorScheme.outlineVariant

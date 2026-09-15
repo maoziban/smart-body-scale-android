@@ -12,7 +12,7 @@ import androidx.room.TypeConverters
  *
  * 实例通过 Room.databaseBuilder() 在 Application 层创建，保证全局单例。
  */
-@Database(entities = [MemberEntity::class, MeasurementEntity::class], version = 1)
+@Database(entities = [MemberEntity::class, MeasurementEntity::class], version = 1, exportSchema = false)
 @TypeConverters(Converters::class)
 abstract class AppDatabase : RoomDatabase() {
     /** 提供对 members 和 measurements 表的所有 DAO 操作 */
