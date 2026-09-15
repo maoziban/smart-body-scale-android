@@ -1,5 +1,5 @@
 [versions]
-agp = "9.3.1"
+agp = "9.3.2"
 coreKtx = "1.10.1"
 junit = "4.13.2"
 junitVersion = "1.1.5"
@@ -12,7 +12,7 @@ room = "2.8.4"
 datastore = "1.1.1"
 navigation = "2.8.5"
 lifecycle = "2.8.7"
-ksp = "2.3.2"
+ksp = "2.3.6"
 healthConnect = "1.1.0-alpha10"
 okhttp = "4.12.0"
 

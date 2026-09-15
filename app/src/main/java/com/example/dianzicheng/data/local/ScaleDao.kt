@@ -75,4 +75,15 @@ interface ScaleDao {
     /** 按 ID 删除测量记录，用于作废无效会话（如秤过早锁定产生的垃圾记录） */
     @Query("DELETE FROM measurements WHERE id = :id")
     suspend fun deleteMeasurementById(id: String)
+
+    /**
+     * 在单个数据库事务中批量恢复成员与测量记录。
+     * 使用 @Transaction 保证原子性：若恢复中途发生异常，所有插入自动回滚，
+     * 避免数据库处于"成员已写、测量未写"的不一致状态。
+     */
+    @androidx.room.Transaction
+    suspend fun restoreAll(members: List<MemberEntity>, measurements: List<MeasurementEntity>) {
+        members.forEach { insertMember(it) }
+        measurements.forEach { insertMeasurement(it) }
+    }
 }

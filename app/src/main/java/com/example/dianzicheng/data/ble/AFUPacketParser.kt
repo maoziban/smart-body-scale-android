@@ -50,10 +50,11 @@ object AFUPacketParser {
         // 还原原始体重整数值：高字节需减去协议基准偏移 0x68，再组合为 24 位整数
         val rawWeight = (w3 - 0x68) * 65536 + w4 * 256 + w5
 
-        // 将原始整数转换为千克（精度 0.001kg），负值或零统一返回 0.0
+        // 将原始整数转换为千克（精度 0.001kg），负值或零统一返回 0.0；体重 <= 0 时稳定标志强制为 false
         val weight = if (rawWeight <= 0) 0.0 else rawWeight / 1000.0
+        val effectiveStable = isStable && weight > 0.0
 
-        return WeightData(weight, isStable)
+        return WeightData(weight, effectiveStable)
     }
 
     /**

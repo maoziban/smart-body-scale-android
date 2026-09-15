@@ -211,10 +211,11 @@ fun DashboardContent(
 @Composable
 fun ConnectionStatusChip(state: BleScaleClient.ConnectionState) {
     val color = when (state) {
-        BleScaleClient.ConnectionState.IDLE -> MaterialTheme.colorScheme.outline
-        BleScaleClient.ConnectionState.SCANNING -> MaterialTheme.colorScheme.primary
-        BleScaleClient.ConnectionState.CONNECTED, BleScaleClient.ConnectionState.MEASURING -> Color(0xFF4CAF50)
-        else -> MaterialTheme.colorScheme.error
+        BleScaleClient.ConnectionState.IDLE       -> MaterialTheme.colorScheme.outline
+        BleScaleClient.ConnectionState.SCANNING   -> MaterialTheme.colorScheme.primary
+        BleScaleClient.ConnectionState.CONNECTING -> MaterialTheme.colorScheme.tertiary
+        BleScaleClient.ConnectionState.CONNECTED,
+        BleScaleClient.ConnectionState.MEASURING  -> Color(0xFF4CAF50)
     }
 
     Surface(
@@ -344,6 +345,9 @@ fun MeasurementResultCard(
             Spacer(modifier = Modifier.height(16.dp))
 
             val hasBia = measurement.impedanceOhm > 0.0 && measurement.bodyFatPct > 0.0
+            // 从成员列表查找性别，用于体脂率健康区间判断（男女标准不同）
+            val isMale = availableMembers.firstOrNull { it.id == measurement.memberId }
+                ?.sex == com.example.dianzicheng.domain.Sex.MALE
 
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -358,7 +362,7 @@ fun MeasurementResultCard(
                 MetricItem(
                     label = "体脂率",
                     value = if (hasBia) String.format("%.1f%%", measurement.bodyFatPct) else "--",
-                    status = if (hasBia) getFatStatus(measurement.bodyFatPct) else null,
+                    status = if (hasBia) getFatStatus(measurement.bodyFatPct, isMale) else null,
                     modifier = Modifier.weight(1f)
                 )
                 MetricItem(
@@ -508,11 +512,19 @@ private fun getBmiStatus(bmi: Double): String = when {
     else -> "肥胖"
 }
 
-private fun getFatStatus(fat: Double): String = when {
-    fat < 10.0 -> "偏低"
-    fat < 20.0 -> "标准"
-    fat < 25.0 -> "偏高"
-    else -> "肥胖"
+private fun getFatStatus(fat: Double, isMale: Boolean): String = when {
+    isMale -> when {
+        fat < 8.0  -> "偏低"
+        fat < 20.0 -> "标准"
+        fat < 25.0 -> "偏高"
+        else       -> "肥胖"
+    }
+    else -> when {
+        fat < 17.0 -> "偏低"
+        fat < 30.0 -> "标准"
+        fat < 35.0 -> "偏高"
+        else       -> "肥胖"
+    }
 }
 
 @Composable

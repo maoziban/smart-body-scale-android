@@ -14,6 +14,9 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.NavType
 import androidx.navigation.navArgument
 
+import androidx.navigation.compose.currentBackStackEntryAsState
+import androidx.navigation.NavGraph.Companion.findStartDestination
+
 @Composable
 fun MainScreen(
     scaleViewModel: ScaleViewModel,
@@ -23,8 +26,11 @@ fun MainScreen(
     onPairingComplete: () -> Unit
 ) {
     val navController = rememberNavController()
-    var selectedItem by remember { mutableIntStateOf(0) }
+    val navBackStackEntry by navController.currentBackStackEntryAsState()
+    val currentRoute = navBackStackEntry?.destination?.route
+
     val items = listOf("测量", "历史", "我的")
+    val routes = listOf("dashboard", "history", "profile")
     val icons = listOf(Icons.Default.Home, Icons.Default.DateRange, Icons.Default.Person)
 
     if (!isPairingComplete) {
@@ -36,22 +42,23 @@ fun MainScreen(
         bottomBar = {
             NavigationBar {
                 items.forEachIndexed { index, item ->
+                    val route = routes[index]
+                    val isSelected = when (route) {
+                        "history" -> currentRoute == "history" || currentRoute?.startsWith("detail/") == true
+                        else -> currentRoute == route
+                    }
                     NavigationBarItem(
                         icon = { Icon(icons[index], contentDescription = item) },
                         label = { Text(item) },
-                        selected = selectedItem == index,
+                        selected = isSelected,
                         onClick = {
-                            selectedItem = index
-                            when (index) {
-                                0 -> navController.navigate("dashboard") {
-                                    popUpTo(navController.graph.startDestinationId)
+                            if (currentRoute != route) {
+                                navController.navigate(route) {
+                                    popUpTo(navController.graph.findStartDestination().id) {
+                                        saveState = true
+                                    }
                                     launchSingleTop = true
-                                }
-                                1 -> navController.navigate("history") {
-                                    launchSingleTop = true
-                                }
-                                2 -> navController.navigate("profile") {
-                                    launchSingleTop = true
+                                    restoreState = true
                                 }
                             }
                         }

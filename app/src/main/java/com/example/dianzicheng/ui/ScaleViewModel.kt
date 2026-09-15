@@ -57,6 +57,14 @@ class ScaleViewModel(
      */
     private var activeSessionTimestamp: Long = 0L
 
+    /** 获取有效的会话时间戳，若为 0L 则兜底初始化为当前系统时间 */
+    private fun getSessionTimestamp(): Long {
+        if (activeSessionTimestamp <= 0L) {
+            activeSessionTimestamp = System.currentTimeMillis()
+        }
+        return activeSessionTimestamp
+    }
+
     /** 当前会话内是否已弹出过"发现新成员"提示，防止重复弹窗打扰用户 */
     private var hasAlertedForCurrentSession = false
 
@@ -237,23 +245,21 @@ class ScaleViewModel(
                             // 在秤时间足够：视为一次有效称重，此时才写入数据库
                             AppLogger.i(TAG, "下秤，提交本次测量: 在秤 ${onScaleMs}ms, sessionId=${sessionId.take(8)}")
                             sessionCommitted = true
-                            processMeasurement(sessionId, activeSessionTimestamp, commitToDb = true)
+                            processMeasurement(sessionId, getSessionTimestamp(), commitToDb = true)
                         } else {
                             // 短暂踩秤/误触/放物品即离开：丢弃，不写入历史
                             AppLogger.i(TAG, "在秤时间过短 (${onScaleMs}ms)，丢弃本次测量不写库")
-                            if (sessionCommitted) {
-                                // 阻抗可能已抢先写库（如赤脚瞬时接触），一并撤销
-                                val committedId = sessionId
-                                viewModelScope.launch {
-                                    try {
-                                        repository.deleteMeasurementById(committedId)
-                                    } catch (e: Exception) {
-                                        AppLogger.e(TAG, "撤销短时测量记录失败: ${e.message}")
-                                    }
+                            // 无论是否已写库，都尝试撤销（阻抗可能已抢先写库，如赤脚瞬时接触）
+                            val committedId = sessionId
+                            viewModelScope.launch {
+                                try {
+                                    repository.deleteMeasurementById(committedId)
+                                } catch (e: Exception) {
+                                    AppLogger.e(TAG, "撤销短时测量记录失败: ${e.message}")
                                 }
-                                healthSyncJob?.cancel()
-                                sessionCommitted = false
                             }
+                            healthSyncJob?.cancel()
+                            sessionCommitted = false
                             lastLockedSessionId = null
                             _uiState.update { it.copy(currentMeasurement = null) }
                         }
@@ -302,7 +308,7 @@ class ScaleViewModel(
                             // 会话已写库（如阻抗已到）才同步更新数据库，否则仅更新内存与 UI
                             processMeasurement(
                                 sessionId = sessionId,
-                                timestamp = activeSessionTimestamp,
+                                timestamp = getSessionTimestamp(),
                                 commitToDb = sessionCommitted
                             )
                         } else {
@@ -326,9 +332,12 @@ class ScaleViewModel(
                 } else {
                     // 体重不稳定：延迟 300ms 后清空 activeSessionId，
                     // 给可能延迟到达的阻抗数据留出补充写入的窗口期
-                    delay(300)
-                    activeSessionId = null
-                    hasAlertedForCurrentSession = false
+                    // 注意：用独立协程异步延迟，不阻塞 collect 协程（避免事件积压）
+                    viewModelScope.launch {
+                        delay(300)
+                        activeSessionId = null
+                        hasAlertedForCurrentSession = false
+                    }
                 }
             }
         }
@@ -348,7 +357,7 @@ class ScaleViewModel(
                     AppLogger.i(TAG, "收到阻抗数据: ${imp.toInt()} Ω，更新记录 sessionId=${sessionId.take(8)}")
                     processMeasurement(
                         sessionId = sessionId,
-                        timestamp = activeSessionTimestamp,
+                        timestamp = getSessionTimestamp(),
                         commitToDb = true
                     )
                 }

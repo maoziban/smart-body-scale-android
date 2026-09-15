@@ -29,7 +29,8 @@ fun PairingScreen(
             arrayOf(
                 Manifest.permission.BLUETOOTH_SCAN,
                 Manifest.permission.BLUETOOTH_CONNECT,
-                Manifest.permission.ACCESS_FINE_LOCATION
+                Manifest.permission.ACCESS_FINE_LOCATION,
+                Manifest.permission.ACCESS_COARSE_LOCATION
             )
         } else {
             arrayOf(
@@ -39,21 +40,28 @@ fun PairingScreen(
         }
     }
 
-    // Permission launcher: when all are granted, start scanning immediately
+    fun hasBlePermissions(): Boolean {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_SCAN) == PackageManager.PERMISSION_GRANTED &&
+            ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED
+        } else {
+            ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
+            ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        }
+    }
+
+    // Permission launcher: when permissions granted, start scanning immediately
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
-    ) { results ->
-        if (results.values.all { it }) {
+    ) { _ ->
+        if (hasBlePermissions()) {
             viewModel.startScanning()
         }
     }
 
     // Auto-start: check permissions then scan (or request permissions first)
     LaunchedEffect(Unit) {
-        val allGranted = requiredPermissions.all {
-            ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED
-        }
-        if (allGranted) {
+        if (hasBlePermissions()) {
             viewModel.startScanning()
         } else {
             permissionLauncher.launch(requiredPermissions)
@@ -61,7 +69,8 @@ fun PairingScreen(
     }
 
     LaunchedEffect(uiState.connection) {
-        if (uiState.connection == BleScaleClient.ConnectionState.CONNECTED) {
+        if (uiState.connection == BleScaleClient.ConnectionState.CONNECTED ||
+            uiState.connection == BleScaleClient.ConnectionState.MEASURING) {
             onPairingComplete()
         }
     }
@@ -113,10 +122,7 @@ fun PairingScreen(
         } else {
             Button(
                 onClick = {
-                    val allGranted = requiredPermissions.all {
-                        ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED
-                    }
-                    if (allGranted) {
+                    if (hasBlePermissions()) {
                         viewModel.startScanning()
                     } else {
                         permissionLauncher.launch(requiredPermissions)

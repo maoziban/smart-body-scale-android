@@ -20,6 +20,8 @@
 
     <queries>
         <package android:name="com.google.android.apps.healthdata" />
+        <package android:name="com.mi.health" />
+        <package android:name="com.xiaomi.hm.health" />
     </queries>
 
     <application

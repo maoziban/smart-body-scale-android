@@ -17,9 +17,16 @@ class Converters {
         return sex.name
     }
 
-    /** 将数据库中的字符串（如 "MALE"）还原为 [Sex] 枚举，读取时调用 */
+    /** 将数据库中的字符串（如 "MALE"）还原为 [Sex] 枚举，读取时调用。
+     *  如遇未知值（数据库损坏、枚举将来扩展后旧库升级等情况），
+     *  降级返回 [Sex.MALE]，避免直接抛 [IllegalArgumentException] 崩溃 App。*/
     @TypeConverter
     fun toSex(value: String): Sex {
-        return Sex.valueOf(value)
+        return try {
+            Sex.valueOf(value)
+        } catch (e: IllegalArgumentException) {
+            android.util.Log.w("Converters", "Unknown Sex value in DB: '$value', defaulting to MALE")
+            Sex.MALE
+        }
     }
 }
