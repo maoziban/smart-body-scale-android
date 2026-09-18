@@ -34,6 +34,7 @@ import com.example.dianzicheng.ui.theme.电子秤Theme
 
 import com.example.dianzicheng.data.backup.WebDavManager
 import com.example.dianzicheng.data.health.HealthConnectManager
+import com.example.dianzicheng.data.phicomm.PhicommS7Manager
 
 class MainActivity : ComponentActivity() {
     private lateinit var database: AppDatabase
@@ -43,6 +44,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var preferenceManager: PreferenceManager
     private lateinit var healthConnectManager: HealthConnectManager
     private lateinit var webDavManager: WebDavManager
+    private lateinit var phicommS7Manager: PhicommS7Manager
 
     private val requestPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -74,6 +76,7 @@ class MainActivity : ComponentActivity() {
         preferenceManager = PreferenceManager(applicationContext)
         healthConnectManager = HealthConnectManager(applicationContext)
         webDavManager = WebDavManager(database.scaleDao())
+        phicommS7Manager = PhicommS7Manager(applicationContext)
 
         bleClient.onMacDiscovered = { mac ->
             lifecycleScope.launch {
@@ -99,7 +102,13 @@ class MainActivity : ComponentActivity() {
                     factory = object : ViewModelProvider.Factory {
                         @Suppress("UNCHECKED_CAST")
                         override fun <T : ViewModel> create(modelClass: Class<T>): T {
-                            return ScaleViewModel(bleClient, scaleRepository, preferenceManager, healthConnectManager) as T
+                            return ScaleViewModel(
+                                bleClient,
+                                scaleRepository,
+                                preferenceManager,
+                                healthConnectManager,
+                                phicommS7Manager
+                            ) as T
                         }
                     }
                 )
@@ -158,5 +167,26 @@ class MainActivity : ComponentActivity() {
         if (missing.isNotEmpty()) {
             requestPermissionLauncher.launch(missing.toTypedArray())
         }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        // 回到前台：如果已记住设备且当前为空闲状态，自动恢复扫描以保持踏秤即连
+        if (!bleClient.lastPairedMac.isNullOrEmpty() && bleClient.connectionState.value == BleScaleClient.ConnectionState.IDLE) {
+            bleClient.startScan()
+        }
+    }
+
+    override fun onStop() {
+        super.onStop()
+        // 进入后台：暂停 BLE 低延迟扫描与 Wi-Fi UDP 监听，节约电量并符合 Android 后台规范
+        bleClient.stopScan()
+        phicommS7Manager.stopListening()
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        bleClient.disconnectAndReset()
+        phicommS7Manager.stopListening()
     }
 }

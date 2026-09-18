@@ -33,6 +33,9 @@ class PreferenceManager(private val context: Context) {
     /** 已配对的蓝牙设备 MAC 地址（格式如 "AA:BB:CC:DD:EE:FF"） */
     private val PAIRED_MAC = stringPreferencesKey("paired_mac")
 
+    /** 已配对的蓝牙设备名称（如 "小米体脂秤 2"） */
+    private val PAIRED_DEVICE_NAME = stringPreferencesKey("paired_device_name")
+
     /** Health Connect 自动同步开关状态 */
     private val HEALTH_CONNECT_ENABLED = booleanPreferencesKey("health_connect_enabled")
 
@@ -58,6 +61,10 @@ class PreferenceManager(private val context: Context) {
     /** 已配对的蓝牙 MAC 地址，未配对时为 null */
     val pairedMac: Flow<String?> = context.dataStore.data
         .map { preferences -> preferences[PAIRED_MAC] }
+
+    /** 已配对的蓝牙设备名称，未配对时为 null */
+    val pairedDeviceName: Flow<String?> = context.dataStore.data
+        .map { preferences -> preferences[PAIRED_DEVICE_NAME] }
 
     /** Health Connect 自动同步是否已开启，默认 false */
     val healthConnectEnabled: Flow<Boolean> = context.dataStore.data
@@ -95,10 +102,20 @@ class PreferenceManager(private val context: Context) {
         }
     }
 
-    /** 清除已配对 MAC 地址并将配对状态重置为 false（重新配对时调用） */
+    /** 保存已配对的蓝牙设备信息（MAC 地址与设备名称）并标记配对已完成 */
+    suspend fun savePairedDevice(mac: String, name: String) {
+        context.dataStore.edit { preferences ->
+            preferences[PAIRED_MAC] = mac
+            preferences[PAIRED_DEVICE_NAME] = name
+            preferences[PAIRING_COMPLETE] = true
+        }
+    }
+
+    /** 清除已配对设备信息并将配对状态重置为 false（重新配对时调用） */
     suspend fun clearPairedMac() {
         context.dataStore.edit { preferences ->
             preferences.remove(PAIRED_MAC)
+            preferences.remove(PAIRED_DEVICE_NAME)
             preferences[PAIRING_COMPLETE] = false
         }
     }

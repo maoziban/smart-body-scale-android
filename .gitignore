@@ -1,15 +1,32 @@
 *.iml
-.gradle
+.gradle/
 /local.properties
-/.idea/caches
-/.idea/libraries
-/.idea/modules.xml
-/.idea/workspace.xml
-/.idea/navEditor.xml
-/.idea/assetWizardSettings.xml
+local.properties
+.kotlin/
+
+# IDE
+.idea/caches/
+.idea/libraries/
+.idea/modules.xml
+.idea/workspace.xml
+.idea/navEditor.xml
+.idea/assetWizardSettings.xml
+*.iws
+*.ipr
+
+# OS generated
 .DS_Store
+*.DS_Store
+**/.DS_Store
+._*
+Thumbs.db
+
+# Build artifacts
+build/
 /build
+app/build/
+release/
+app/release/
 /captures
 .externalNativeBuild
 .cxx
-local.properties

@@ -33,12 +33,16 @@ class ProfileRepository(private val dao: ScaleDao) {
     }
 
     /**
-     * 删除指定家庭成员。
-     * 注意：删除成员不会级联删除该成员的测量历史记录，历史记录中的 memberId 会保留。
+     * 删除指定家庭成员，并级联删除该成员的所有历史测量记录。
+     *
+     * Bug #26 修复：原实现仅删除成员行，导致 measurements 表中该成员的记录
+     * memberId 字段成为悬空孤立值（无对应成员），历史页显示归属混乱。
+     * 现改为先删除成员测量记录，再删除成员本身，保持数据一致性。
      *
      * @param member 要删除的家庭成员领域对象
      */
     suspend fun deleteMember(member: FamilyMember) {
+        dao.deleteMeasurementsByMemberId(member.id)
         dao.deleteMember(member.toEntity())
     }
 }

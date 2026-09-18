@@ -77,6 +77,15 @@ interface ScaleDao {
     suspend fun deleteMeasurementById(id: String)
 
     /**
+     * 删除指定成员的所有测量记录（按 memberId）。
+     * 配合 [deleteMember] 实现级联删除，避免留下 memberId 悬空的孤立记录。
+     *
+     * @param memberId 要清除记录的成员 ID
+     */
+    @Query("DELETE FROM measurements WHERE memberId = :memberId")
+    suspend fun deleteMeasurementsByMemberId(memberId: String)
+
+    /**
      * 在单个数据库事务中批量恢复成员与测量记录。
      * 使用 @Transaction 保证原子性：若恢复中途发生异常，所有插入自动回滚，
      * 避免数据库处于"成员已写、测量未写"的不一致状态。

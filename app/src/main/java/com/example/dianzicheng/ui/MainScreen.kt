@@ -23,7 +23,8 @@ fun MainScreen(
     historyViewModel: HistoryViewModel,
     profileViewModel: ProfileViewModel,
     isPairingComplete: Boolean,
-    onPairingComplete: () -> Unit
+    onPairingComplete: () -> Unit,
+    onResetPairing: () -> Unit = { profileViewModel.resetPairing() }
 ) {
     val navController = rememberNavController()
     val navBackStackEntry by navController.currentBackStackEntryAsState()
@@ -72,7 +73,12 @@ fun MainScreen(
             startDestination = "dashboard",
             modifier = Modifier.padding(innerPadding)
         ) {
-            composable("dashboard") { DashboardScreen(scaleViewModel) }
+            composable("dashboard") {
+                DashboardScreen(
+                    viewModel = scaleViewModel,
+                    onNavigateToPairing = onResetPairing
+                )
+            }
             composable("history") { 
                 HistoryScreen(
                     viewModel = historyViewModel,

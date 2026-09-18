@@ -33,7 +33,10 @@ data class ScaleUiState(
     val availableMembers: List<FamilyMember> = emptyList(),
     val showNewMemberAlert: Boolean = false,
     val error: String? = null,
-    val debugMessage: String? = null,
     val discoveredDeviceName: String? = null,
-    val discoveredDeviceMac: String? = null
+    val discoveredDeviceMac: String? = null,
+    val pairedDeviceMac: String? = null,
+    val pairedDeviceName: String? = null,
+    val isDeviceRemembered: Boolean = false,
+    val discoveredScales: List<BleScaleClient.DiscoveredScaleDevice> = emptyList()
 )

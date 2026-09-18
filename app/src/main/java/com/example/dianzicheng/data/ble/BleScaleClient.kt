@@ -84,9 +84,24 @@ class BleScaleClient(private val context: Context) {
     /** 扫描到的体脂秤设备信息（外部只读）。 */
     val discoveredDevice: StateFlow<Pair<String, String>?> = _discoveredDevice
 
+    /** 扫描发现的所有候选体脂秤列表（供用户手动选择配对）。 */
+    private val _discoveredScales = MutableStateFlow<List<DiscoveredScaleDevice>>(emptyList())
+    /** 扫描发现的所有候选体脂秤列表（外部只读）。 */
+    val discoveredScales: StateFlow<List<DiscoveredScaleDevice>> = _discoveredScales
+
     // -------------------------------------------------------------------------
-    // 连接状态枚举
+    // 连接状态枚举与设备模型
     // -------------------------------------------------------------------------
+
+    /**
+     * 扫描发现的候选体脂秤设备数据模型。
+     */
+    data class DiscoveredScaleDevice(
+        val name: String,
+        val address: String,
+        val rssi: Int = 0,
+        val isBroadcastScale: Boolean = false
+    )
 
     /**
      * BLE 连接状态枚举，描述客户端当前所处的生命周期阶段。
@@ -103,10 +118,16 @@ class BleScaleClient(private val context: Context) {
     // 外部可读写的辅助属性
     // -------------------------------------------------------------------------
 
-    /** 上次成功配对的设备 MAC 地址，优先用于精确匹配扫描结果。 */
+    /** 上次成功配对并记住的设备 MAC 地址。只有该值非空时，才允许自动连接。 */
     var lastPairedMac: String? = null
 
-    /** MAC 地址首次确认回调，用于将新发现的 MAC 持久化到外部存储。 */
+    /**
+     * 是否处于显式手动配对模式。
+     * 处于配对模式时，扫描器绝不自动连接任何设备，仅将符合特征的设备收集至 [discoveredScales] 供用户手动选择。
+     */
+    var isPairingMode: Boolean = false
+
+    /** MAC 地址首次确认回调，用于将新配对的 MAC 持久化到外部存储。 */
     var onMacDiscovered: ((String) -> Unit)? = null
 
     /** GATT 连接失败后当前的自动重连次数 */
@@ -185,7 +206,7 @@ class BleScaleClient(private val context: Context) {
             return true
         }
 
-        // 4. 称重设备常见品牌与关键词匹配
+        // 4. 称重设备常见品牌与关键词精确匹配（避免使用宽泛包含如 "MI", "S7", "S9"，防止误连路由器、扫地机、手机等设备）
         val nameMatched = deviceName?.let { name ->
             name.contains("AFU", ignoreCase = true) ||
             name.contains("WL-TZ", ignoreCase = true) ||
@@ -195,8 +216,13 @@ class BleScaleClient(private val context: Context) {
             name.contains("体脂", ignoreCase = true) ||
             name.contains("电子秤", ignoreCase = true) ||
             name.contains("体重", ignoreCase = true) ||
-            name.contains("MI", ignoreCase = true) ||
-            name.contains("MIBFS", ignoreCase = true) ||
+            name.startsWith("MIBFS", ignoreCase = true) ||
+            name.startsWith("MISCALE", ignoreCase = true) ||
+            name.contains("小米体重", ignoreCase = true) ||
+            name.contains("小米体脂", ignoreCase = true) ||
+            name.contains("米家体脂", ignoreCase = true) ||
+            name.contains("米家体重", ignoreCase = true) ||
+            name.equals("MI_SCALE", ignoreCase = true) ||
             name.contains("OKOK", ignoreCase = true) ||
             name.contains("Yolanda", ignoreCase = true) ||
             name.contains("Senssun", ignoreCase = true) ||
@@ -204,7 +230,13 @@ class BleScaleClient(private val context: Context) {
             name.contains("沃莱", ignoreCase = true) ||
             name.contains("香山", ignoreCase = true) ||
             name.contains("云麦", ignoreCase = true) ||
-            name.contains("小米", ignoreCase = true)
+            name.contains("Phicomm", ignoreCase = true) ||
+            name.contains("斐讯", ignoreCase = true) ||
+            name.startsWith("zS7", ignoreCase = true) ||
+            name.startsWith("S7_", ignoreCase = true) ||
+            name.startsWith("S9_", ignoreCase = true) ||
+            name.equals("S7", ignoreCase = true) ||
+            name.equals("S9", ignoreCase = true)
         } == true
         if (nameMatched) return true
 
@@ -245,48 +277,99 @@ class BleScaleClient(private val context: Context) {
     private val scanCallback = object : ScanCallback() {
         override fun onScanResult(callbackType: Int, result: ScanResult) {
             val device = result.device
-            // 判断该广播结果是否匹配目标体脂秤
+
+            // 模式 1：处于手动配对模式，或尚未记住任何设备
+            if (isPairingMode || lastPairedMac.isNullOrEmpty()) {
+                if (isScaleAdvertisement(result)) {
+                    val rawBytes = result.scanRecord?.bytes
+                    val name = device.name ?: result.scanRecord?.deviceName ?: parseNameFromBytes(rawBytes) ?: "体脂秤设备 (${device.address.takeLast(5)})"
+                    val isAdv = MultiScalePacketParser.parseAdvertisement(result.scanRecord) != null
+
+                    val currentList = _discoveredScales.value.toMutableList()
+                    val existingIndex = currentList.indexOfFirst { it.address.equals(device.address, ignoreCase = true) }
+                    val item = DiscoveredScaleDevice(
+                        name = name,
+                        address = device.address,
+                        rssi = result.rssi,
+                        isBroadcastScale = isAdv
+                    )
+                    if (existingIndex >= 0) {
+                        currentList[existingIndex] = item
+                    } else {
+                        currentList.add(item)
+                    }
+                    _discoveredScales.value = currentList
+                    _discoveredDevice.value = Pair(name, device.address)
+                }
+                // 【核心保护】：手动配对阶段仅收集设备列表，绝不自动发起连接，等待用户手动点击！
+                return
+            }
+
+            // 模式 2：已记住设备，严格执行自动连接（仅连接该设备，杜绝误连周围无关设备）
+            val targetMac = lastPairedMac ?: return
+            if (!device.address.equals(targetMac, ignoreCase = true)) {
+                // 非已绑定的设备，严格忽略
+                return
+            }
+
+            // 确认是已记住的目标设备后，按协议处理
             if (isScaleAdvertisement(result)) {
                 val name = device.name ?: result.scanRecord?.deviceName ?: parseNameFromBytes(result.scanRecord?.bytes) ?: "体脂秤设备 (${device.address.takeLast(5)})"
 
                 // 尝试直接从广播数据解析（如小米秤、免配对广播秤即踩即读）
                 val advScaleData = MultiScalePacketParser.parseAdvertisement(result.scanRecord)
-                if (advScaleData != null && advScaleData.weightKg > 0.0) {
-                    _weight.value = advScaleData.weightKg
-                    val validStable = advScaleData.isStable && (advScaleData.weightKg >= 3.0)
-                    _isStable.value = validStable
-                    if (validStable) {
-                        _connectionState.value = ConnectionState.MEASURING
-                    } else if (_connectionState.value != ConnectionState.MEASURING) {
-                        _connectionState.value = ConnectionState.CONNECTED
+                if (advScaleData != null) {
+                    // Bug #25 修复：只要 parseAdvertisement 返回非 null，就判定为广播秤，统一在此处理。
+                    // 原条件 "advScaleData.weightKg > 0.0" 会导致离秤 0kg 包 fall-through 到下方 GATT 连接逻辑，
+                    // 从而错误地对广播秤发起 GATT 连接。
+                    if (advScaleData.weightKg > 0.0) {
+                        _weight.value = advScaleData.weightKg
+                        val validStable = advScaleData.isStable && (advScaleData.weightKg >= 3.0)
+                        _isStable.value = validStable
+                        if (validStable) {
+                            _connectionState.value = ConnectionState.MEASURING
+                        } else if (_connectionState.value != ConnectionState.MEASURING) {
+                            _connectionState.value = ConnectionState.CONNECTED
+                        }
+                        // 仅当体重 >= 3.0kg 时才接收阻抗（人体必须站秤接触电极，禁止空秤接收阻抗）
+                        if (advScaleData.weightKg >= 3.0) {
+                            advScaleData.impedanceOhm?.let { _impedance.value = it }
+                        }
+                    } else {
+                        // 广播秤下秤包（weightKg == 0.0）：立即归零体重与稳定状态，切回已连接状态
+                        AppLogger.d(TAG, "广播秤下秤包 (0.0kg)：归零测量状态")
+                        _weight.value = 0.0
+                        _isStable.value = false
+                        _impedance.value = 0.0
+                        if (_connectionState.value == ConnectionState.MEASURING) {
+                            _connectionState.value = ConnectionState.CONNECTED
+                        }
                     }
-                    advScaleData.impedanceOhm?.let { _impedance.value = it }
 
-                    // 更新已发现设备信息与持久化 MAC
                     _discoveredDevice.value = Pair(name, device.address)
-                    onMacDiscovered?.invoke(device.address)
 
-                    // 重置 2.5s 无广播数据超时定时器
+                    // 重置 2.5s 无广播数据超时定时器（无论体重是否为 0 均重置，避免超时回调再次归零干扰）
                     inactivityRunnable?.let { handler.removeCallbacks(it) }
                     val watchdog = Runnable {
                         AppLogger.d(TAG, "无广播数据超时 (2.5s): 用户已下秤，重置测量状态")
                         _weight.value = 0.0
                         _isStable.value = false
                         _impedance.value = 0.0
+                        if (_connectionState.value == ConnectionState.MEASURING) {
+                            _connectionState.value = ConnectionState.CONNECTED
+                        }
                     }
                     inactivityRunnable = watchdog
                     handler.postDelayed(watchdog, 2500)
 
-                    // 广播秤无需且不能停止扫描去连接 GATT（连接可能被秤拒绝并中断持续数据流），保持扫描流以持续接收实时示数
+                    // 广播秤保持扫描流以持续接收实时示数，直接返回，不走 GATT 连接逻辑
                     return
                 }
 
                 // 非广播秤（AFU / SIG / OKOK 等需 GATT 双向通信的设备）：建立 GATT 连接
-                val rawAdvHex = result.scanRecord?.bytes?.joinToString(" ") { "%02X".format(it) } ?: "null"
-                AppLogger.i(TAG, "匹配到 GATT 体脂秤! 设备: $name [${device.address}], 广播原始数据: $rawAdvHex")
+                AppLogger.i(TAG, "已发现已记住的体脂秤，自动连接 GATT: $name [${device.address}]")
                 _discoveredDevice.value = Pair(name, device.address)
                 stopScan()
-                onMacDiscovered?.invoke(device.address)
                 connect(device)
             }
         }
@@ -356,9 +439,10 @@ class BleScaleClient(private val context: Context) {
      * 启动低能耗蓝牙（BLE）主动扫描。
      *
      * 启动前会：
-     * 1. 重置体重、稳定、阻抗状态为初始值。
-     * 2. 清理旧 GATT 连接和看门狗定时器，防止资源泄漏。
-     * 3. 以 [ScanSettings.SCAN_MODE_LOW_LATENCY] 低延迟模式扫描，报告延迟为 0（即时回调）。
+     * 1. 检查是否满足扫描条件：非配对模式下若未记住任何设备，直接跳过并设为 IDLE。
+     * 2. 重置体重、稳定、阻抗状态为初始值。
+     * 3. 清理旧 GATT 连接和看门狗定时器，防止资源泄漏。
+     * 4. 以 [ScanSettings.SCAN_MODE_LOW_LATENCY] 低延迟模式扫描，报告延迟为 0（即时回调）。
      *
      * 若蓝牙适配器不可用或未启用，则直接将状态设为 [ConnectionState.IDLE] 并返回。
      */
@@ -367,6 +451,13 @@ class BleScaleClient(private val context: Context) {
         _weight.value = 0.0
         _isStable.value = false
         _impedance.value = 0.0
+
+        // 【关键保护】：非配对模式下，如果没有记住任何设备，绝不执行盲目扫描和自动连接
+        if (!isPairingMode && lastPairedMac.isNullOrEmpty()) {
+            AppLogger.i(TAG, "尚未记住任何体脂秤设备，跳过自动连接扫描（请先进行手动配对）")
+            _connectionState.value = ConnectionState.IDLE
+            return
+        }
 
         val scanner = bluetoothAdapter?.bluetoothLeScanner
         if (scanner == null) {
@@ -387,7 +478,7 @@ class BleScaleClient(private val context: Context) {
         } catch (e: Exception) {}
         bluetoothGatt = null
 
-        AppLogger.i(TAG, "启动 BLE 扫描 (pairedMac: $lastPairedMac)...")
+        AppLogger.i(TAG, "启动 BLE 扫描 (isPairingMode: $isPairingMode, pairedMac: $lastPairedMac)...")
         _connectionState.value = ConnectionState.SCANNING
 
         // 构建低延迟扫描参数配置
@@ -407,6 +498,49 @@ class BleScaleClient(private val context: Context) {
         } catch (e: Exception) {
             AppLogger.e(TAG, "启动 BLE 扫描失败: ${e.message}")
             _connectionState.value = ConnectionState.IDLE
+        }
+    }
+
+    /**
+     * 启动设备手动配对扫描。
+     * 处于配对模式时绝不自动连接任何设备，仅上报扫描到的候选秤列表供用户手动选择。
+     */
+    fun startPairingScan() {
+        AppLogger.i(TAG, "启动设备手动配对扫描...")
+        isPairingMode = true
+        _discoveredScales.value = emptyList()
+        _discoveredDevice.value = null
+        startScan()
+    }
+
+    /**
+     * 用户手动选择设备并发起连接与记住。
+     *
+     * @param device 用户在界面上点击的目标秤设备
+     */
+    fun manualConnect(device: DiscoveredScaleDevice) {
+        isPairingMode = false
+        stopScan()
+        val bluetoothAdapter = bluetoothAdapter ?: return
+        val remoteDevice = try {
+            bluetoothAdapter.getRemoteDevice(device.address)
+        } catch (e: Exception) {
+            AppLogger.e(TAG, "无效的 MAC 地址: ${device.address}: ${e.message}")
+            return
+        }
+
+        AppLogger.i(TAG, "用户手动连接设备: ${device.name} [${device.address}], 广播秤: ${device.isBroadcastScale}")
+        _discoveredDevice.value = Pair(device.name, device.address)
+        lastPairedMac = device.address
+        onMacDiscovered?.invoke(device.address)
+
+        if (device.isBroadcastScale) {
+            // 广播秤（如小米体脂秤）：已记住该 MAC，直接设为已连接并启动针对该已记住 MAC 的自动监听扫描
+            _connectionState.value = ConnectionState.CONNECTED
+            startScan()
+        } else {
+            // GATT 秤：发起 GATT 连接
+            connect(remoteDevice)
         }
     }
 
@@ -433,6 +567,7 @@ class BleScaleClient(private val context: Context) {
      * 断开当前 GATT 连接并完整重置客户端至初始状态。
      *
      * 会清除：
+     * - 配对模式标记与候选设备列表
      * - 无数据超时定时器（inactivityRunnable）
      * - 连接超时看门狗（connectTimeoutRunnable）
      * - GATT 连接实例
@@ -442,6 +577,8 @@ class BleScaleClient(private val context: Context) {
      */
     fun disconnectAndReset() {
         AppLogger.i(TAG, "断开连接并重置蓝牙状态")
+        isPairingMode = false
+        _discoveredScales.value = emptyList()
         // 取消无数据超时定时器
         inactivityRunnable?.let { handler.removeCallbacks(it) }
         // 取消 GATT 连接超时看门狗
@@ -705,13 +842,17 @@ class BleScaleClient(private val context: Context) {
                     _connectionState.value = ConnectionState.MEASURING
                 }
             } else if (result.weightKg <= 0.0 && result.impedanceOhm == null) {
-                // 仅当体重为 0 且无阻抗数据时，才清除稳定标志和阻抗
+                // 仅当体重为 0 且无阻抗数据时，才清除稳定标志和阻抗，并立即切回已连接状态
                 _isStable.value = false
                 _impedance.value = 0.0
+                if (_connectionState.value == ConnectionState.MEASURING) {
+                    _connectionState.value = ConnectionState.CONNECTED
+                }
             }
 
             result.impedanceOhm?.let { imp ->
-                if (imp > 0.0) {
+                // 人体生物电阻抗（BIA）必须基于真实人体踩秤（体重 >= 3.0kg）才能测得，空秤时禁止接收阻抗
+                if (imp > 0.0 && (_weight.value >= 3.0 || result.weightKg >= 3.0)) {
                     _impedance.value = imp
                 }
             }
@@ -790,6 +931,14 @@ class BleScaleClient(private val context: Context) {
                 }
                 if (bluetoothGatt == gatt) {
                     bluetoothGatt = null
+                }
+                if (!isPairingMode && !lastPairedMac.isNullOrEmpty()) {
+                    AppLogger.i(TAG, "设备断开后自动恢复扫描以等待下次上秤...")
+                    handler.postDelayed({
+                        if (!isPairingMode && !lastPairedMac.isNullOrEmpty() && _connectionState.value == ConnectionState.IDLE) {
+                            startScan()
+                        }
+                    }, 1200)
                 }
             }
         }

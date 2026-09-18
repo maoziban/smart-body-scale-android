@@ -2,6 +2,7 @@ package com.example.dianzicheng.domain
 
 import java.util.Calendar
 import kotlin.math.max
+import com.example.dianzicheng.data.local.AppLogger
 
 /**
  * 身体成分计算算法（BIA - 生物电阻抗分析）。
@@ -98,10 +99,19 @@ object BodyAlgorithm {
      *
      * 以当年元旦为分界：若当年的第几天 < 出生日期的第几天，说明今年生日未过，年龄减 1。
      *
-     * @param birthDateEpochMs 出生日期（Unix 毫秒时间戳）
+     * Bug #27 修复：当 birthDateEpochMs <= 0L 时（成员未填写出生日期），
+     * 原实现会将 0L 当作 1970-01-01 计算，得到约 56 岁，导致体脂率偏高。
+     * 现改为返回中性默认年龄 30 岁，减少未填生日时的计算偏差，并记录警告日志。
+     *
+     * @param birthDateEpochMs 出生日期（Unix 毫秒时间戳），0 或负数表示未设置
      * @return 年龄（1~120 范围内，防止异常数据导致崩溃）
      */
     private fun calculateAge(birthDateEpochMs: Long): Int {
+        // 出生日期未设置（0L 或负数）：返回中性默认年龄，避免 1970 年导致偏差
+        if (birthDateEpochMs <= 0L) {
+            AppLogger.w("BodyAlgorithm", "出生日期未设置（birthDateEpochMs=$birthDateEpochMs），使用默认年龄 30 岁参与体成分计算")
+            return 30
+        }
         val today = Calendar.getInstance()
         val birthDate = Calendar.getInstance().apply {
             timeInMillis = birthDateEpochMs

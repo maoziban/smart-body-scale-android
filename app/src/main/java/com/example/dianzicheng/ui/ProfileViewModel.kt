@@ -41,6 +41,16 @@ class ProfileViewModel(
     val members: StateFlow<List<FamilyMember>> = repository.getMembers()
         .stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
 
+    // ── 设备配对设置 ─────────────────────────────────────────────────────────
+
+    /** 当前已配对记住的设备 MAC 地址 */
+    val pairedMac: StateFlow<String?> = preferenceManager.pairedMac
+        .stateIn(viewModelScope, SharingStarted.Lazily, null)
+
+    /** 当前已配对记住的设备名称 */
+    val pairedDeviceName: StateFlow<String?> = preferenceManager.pairedDeviceName
+        .stateIn(viewModelScope, SharingStarted.Lazily, null)
+
     // ── Health Connect 设置 ───────────────────────────────────────────────────
 
     /** Health Connect 自动同步开关状态（来自 DataStore） */

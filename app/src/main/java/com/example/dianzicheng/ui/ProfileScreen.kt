@@ -51,6 +51,8 @@ fun ProfileContent(
     onAddMember: (String, Sex, Double, Long, Double) -> Unit,
     onDeleteMember: (FamilyMember) -> Unit,
     onResetPairing: () -> Unit,
+    pairedMac: String? = null,
+    pairedDeviceName: String? = null,
     healthConnectEnabled: Boolean,
     onToggleHealthConnect: (Boolean) -> Unit,
     onRequestHealthConnectPermissions: () -> Unit,
@@ -76,6 +78,8 @@ fun ProfileContent(
     var showAddDialog by remember { mutableStateOf(false) }
     var showWebdavDialog by remember { mutableStateOf(false) }
     var showLogDialog by remember { mutableStateOf(false) }
+    var showUnpairConfirmDialog by remember { mutableStateOf(false) }
+    var memberToDelete by remember { mutableStateOf<FamilyMember?>(null) }
 
     val dateFormat = remember { SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()) }
 
@@ -130,7 +134,7 @@ fun ProfileContent(
                 items(members) { member ->
                     MemberCard(
                         member = member,
-                        onDelete = { onDeleteMember(member) }
+                        onDelete = { memberToDelete = member }
                     )
                 }
             }
@@ -364,9 +368,16 @@ fun ProfileContent(
                         .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f))
                 ) {
                     SettingsItem(
-                        title = "重新配对设备",
+                        title = if (pairedMac.isNullOrEmpty()) "绑定体脂秤" else "已记住体脂秤",
+                        subtitle = if (pairedMac.isNullOrEmpty()) "暂未绑定，点击手动搜索并连接" else "${pairedDeviceName ?: "体脂秤"} ($pairedMac) · 点击解除绑定",
                         icon = Icons.Default.Bluetooth,
-                        onClick = onResetPairing
+                        onClick = {
+                            if (pairedMac.isNullOrEmpty()) {
+                                onResetPairing()
+                            } else {
+                                showUnpairConfirmDialog = true
+                            }
+                        }
                     )
                     HorizontalDivider(
                         modifier = Modifier.padding(horizontal = 16.dp),
@@ -412,6 +423,63 @@ fun ProfileContent(
             onConfirm = { name, sex, height, birth, weight ->
                 onAddMember(name, sex, height, birth, weight)
                 showAddDialog = false
+            }
+        )
+    }
+
+    if (memberToDelete != null) {
+        val target = memberToDelete!!
+        AlertDialog(
+            onDismissRequest = { memberToDelete = null },
+            title = { Text("确认删除成员", fontWeight = FontWeight.Bold) },
+            text = {
+                Text("确定要删除成员「${target.name}」吗？\n删除后该成员的历史测量记录将保留，但不再关联到此成员。")
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        onDeleteMember(target)
+                        memberToDelete = null
+                    },
+                    colors = ButtonDefaults.textButtonColors(
+                        contentColor = MaterialTheme.colorScheme.error
+                    )
+                ) {
+                    Text("删除", fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { memberToDelete = null }) {
+                    Text("取消")
+                }
+            }
+        )
+    }
+
+    if (showUnpairConfirmDialog) {
+        AlertDialog(
+            onDismissRequest = { showUnpairConfirmDialog = false },
+            title = { Text("解除设备绑定？", fontWeight = FontWeight.Bold) },
+            text = {
+                Text("确定要解除与体脂秤「${pairedDeviceName ?: pairedMac}」的绑定吗？\n\n解除后 App 将暂停自动连接，直到您重新手动搜索并绑定设备。")
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showUnpairConfirmDialog = false
+                        onResetPairing()
+                    },
+                    colors = ButtonDefaults.textButtonColors(
+                        contentColor = MaterialTheme.colorScheme.error
+                    )
+                ) {
+                    Text("解除绑定", fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showUnpairConfirmDialog = false }) {
+                    Text("取消")
+                }
             }
         )
     }
@@ -879,6 +947,8 @@ fun ProfileScreen(
     val statusMessage by viewModel.statusMessage.collectAsState()
     val syncProgress by viewModel.syncProgress.collectAsState()
     val logEntries by viewModel.logEntries.collectAsState()
+    val pairedMac by viewModel.pairedMac.collectAsState()
+    val pairedDeviceName by viewModel.pairedDeviceName.collectAsState()
 
     val permissionLauncher = rememberLauncherForActivityResult(
         contract = PermissionController.createRequestPermissionResultContract()
@@ -902,6 +972,8 @@ fun ProfileScreen(
         onAddMember = { name, sex, height, birth, weight -> viewModel.addMember(name, sex, height, birth, weight) },
         onDeleteMember = { viewModel.deleteMember(it) },
         onResetPairing = { viewModel.resetPairing() },
+        pairedMac = pairedMac,
+        pairedDeviceName = pairedDeviceName,
         healthConnectEnabled = healthConnectEnabled,
         onToggleHealthConnect = { enabled ->
             viewModel.setHealthConnectEnabled(enabled)

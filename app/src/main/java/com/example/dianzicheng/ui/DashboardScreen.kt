@@ -21,6 +21,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -38,6 +39,7 @@ fun DashboardContent(
     onDismissAlert: () -> Unit,
     onSelectMember: (FamilyMember?) -> Unit,
     onBindMember: (FamilyMember) -> Unit,
+    onNavigateToPairing: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     var showMemberSelectDialog by remember { mutableStateOf(false) }
@@ -124,7 +126,11 @@ fun DashboardContent(
             Spacer(modifier = Modifier.height(12.dp))
 
             // Connection Status Chip
-            ConnectionStatusChip(uiState.connection)
+            ConnectionStatusChip(
+                state = uiState.connection,
+                deviceName = uiState.pairedDeviceName ?: uiState.discoveredDeviceName,
+                isDeviceRemembered = uiState.isDeviceRemembered
+            )
 
             Spacer(modifier = Modifier.height(16.dp))
 
@@ -154,28 +160,68 @@ fun DashboardContent(
 
             Spacer(modifier = Modifier.height(16.dp))
 
-            // Action Button
-            if (uiState.connection == BleScaleClient.ConnectionState.IDLE) {
-                FilledTonalButton(
-                    onClick = onStartScan,
+            // Action Button / Binding Guidance Card
+            if (!uiState.isDeviceRemembered) {
+                Card(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(56.dp),
+                        .padding(vertical = 4.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f)
+                    ),
                     shape = MaterialTheme.shapes.large
                 ) {
-                    Text("开始称重", fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                    Column(
+                        modifier = Modifier.padding(20.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Text(
+                            "未绑定体脂秤",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            "手动连接并记住体脂秤后，App 将仅针对该设备开启自动连接，防止误连周围其他设备。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            textAlign = TextAlign.Center
+                        )
+                        Spacer(modifier = Modifier.height(16.dp))
+                        Button(
+                            onClick = onNavigateToPairing,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Icon(Icons.Default.Bluetooth, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("搜索并绑定设备")
+                        }
+                    }
                 }
-            } else if (uiState.connection == BleScaleClient.ConnectionState.SCANNING) {
-                LinearProgressIndicator(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(CircleShape)
-                )
-                Text(
-                    "正在寻找设备...",
-                    modifier = Modifier.padding(top = 8.dp),
-                    style = MaterialTheme.typography.bodySmall
-                )
+            } else {
+                if (uiState.connection == BleScaleClient.ConnectionState.IDLE) {
+                    FilledTonalButton(
+                        onClick = onStartScan,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(56.dp),
+                        shape = MaterialTheme.shapes.large
+                    ) {
+                        Text("开始称重", fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                    }
+                } else if (uiState.connection == BleScaleClient.ConnectionState.SCANNING) {
+                    LinearProgressIndicator(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(CircleShape)
+                    )
+                    Text(
+                        "正在自动寻找已记住的设备 (${uiState.pairedDeviceName ?: uiState.pairedDeviceMac ?: "体脂秤"})...",
+                        modifier = Modifier.padding(top = 8.dp),
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
             }
 
             Spacer(modifier = Modifier.height(32.dp))
@@ -209,13 +255,51 @@ fun DashboardContent(
 }
 
 @Composable
-fun ConnectionStatusChip(state: BleScaleClient.ConnectionState) {
+fun ConnectionStatusChip(
+    state: BleScaleClient.ConnectionState,
+    deviceName: String? = null,
+    isDeviceRemembered: Boolean = true
+) {
+    if (!isDeviceRemembered) {
+        Surface(
+            color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.25f),
+            shape = CircleShape,
+            border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.35f))
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(8.dp)
+                        .background(MaterialTheme.colorScheme.error, CircleShape)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = "未绑定设备（自动连接已暂停）",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.error
+                )
+            }
+        }
+        return
+    }
+
     val color = when (state) {
         BleScaleClient.ConnectionState.IDLE       -> MaterialTheme.colorScheme.outline
         BleScaleClient.ConnectionState.SCANNING   -> MaterialTheme.colorScheme.primary
         BleScaleClient.ConnectionState.CONNECTING -> MaterialTheme.colorScheme.tertiary
         BleScaleClient.ConnectionState.CONNECTED,
         BleScaleClient.ConnectionState.MEASURING  -> Color(0xFF4CAF50)
+    }
+
+    val label = when (state) {
+        BleScaleClient.ConnectionState.IDLE -> if (deviceName != null) "就绪 · $deviceName" else "未连接"
+        BleScaleClient.ConnectionState.SCANNING -> if (deviceName != null) "正在寻找 · $deviceName" else "搜索中"
+        BleScaleClient.ConnectionState.CONNECTING -> if (deviceName != null) "正在连接 · $deviceName" else "连接中"
+        BleScaleClient.ConnectionState.CONNECTED -> if (deviceName != null) "已连接 · $deviceName" else "已连接"
+        BleScaleClient.ConnectionState.MEASURING -> if (deviceName != null) "测量中 · $deviceName" else "测量中"
     }
 
     Surface(
@@ -234,13 +318,7 @@ fun ConnectionStatusChip(state: BleScaleClient.ConnectionState) {
             )
             Spacer(modifier = Modifier.width(8.dp))
             Text(
-                text = when (state) {
-                    BleScaleClient.ConnectionState.IDLE -> "未连接"
-                    BleScaleClient.ConnectionState.SCANNING -> "搜索中"
-                    BleScaleClient.ConnectionState.CONNECTING -> "连接中"
-                    BleScaleClient.ConnectionState.CONNECTED -> "已连接"
-                    BleScaleClient.ConnectionState.MEASURING -> "测量中"
-                },
+                text = label,
                 style = MaterialTheme.typography.labelLarge,
                 color = color
             )
@@ -557,12 +635,16 @@ fun MetricItem(label: String, value: String, status: String? = null, modifier: M
 @Composable
 fun DashboardScreen(
     viewModel: ScaleViewModel,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    onNavigateToPairing: () -> Unit = {}
 ) {
     val uiState by viewModel.uiState.collectAsState()
 
-    LaunchedEffect(Unit) {
-        if (uiState.connection == BleScaleClient.ConnectionState.IDLE) {
+    // 仅当已有记住的设备时，才在进入主页时自动尝试连接该设备。
+    // Bug #24 修复：同时监听 connection 状态，确保从后台切回时连接已断（IDLE）也能重新触发扫描，
+    // 而不是仅在 isDeviceRemembered 首次从 false->true 时触发一次（冷启动后 key 不再变化导致漏触发）。
+    LaunchedEffect(uiState.isDeviceRemembered, uiState.connection) {
+        if (uiState.isDeviceRemembered && uiState.connection == BleScaleClient.ConnectionState.IDLE) {
             viewModel.startScanning()
         }
     }
@@ -573,6 +655,7 @@ fun DashboardScreen(
         onDismissAlert = { viewModel.dismissAlert() },
         onSelectMember = { viewModel.selectMember(it) },
         onBindMember = { viewModel.bindCurrentMeasurementToMember(it) },
+        onNavigateToPairing = onNavigateToPairing,
         modifier = modifier
     )
 }
