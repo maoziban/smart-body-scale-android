@@ -409,7 +409,7 @@ fun ProfileContent(
                     )
                     SettingsItem(
                         title = "关于软件",
-                        subtitle = "版本 1.3.7",
+                        subtitle = "版本 1.4.0",
                         icon = Icons.Default.Info,
                         onClick = { }
                     )
