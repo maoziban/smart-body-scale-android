@@ -88,4 +88,21 @@ class PhicommS7ProtocolTest {
         assertNull(PhicommS7Manager.parsePacket("{}"))
         assertNull(PhicommS7Manager.parsePacket("""{"other_field": 123}"""))
     }
+
+    @Test
+    fun testMacAddressFormattingAndTrimming() {
+        // 测试包含连字符与空格的 MAC 地址格式化
+        val jsonHyphen = """{"mac":" 12-34-56-78-90-ab ", "weight":60.0}"""
+        val packetHyphen = PhicommS7Manager.parsePacket(jsonHyphen)
+        assertNotNull(packetHyphen)
+        assertTrue(packetHyphen is PhicommS7Packet.WeightMeasurement)
+        assertEquals("12:34:56:78:90:AB", (packetHyphen as PhicommS7Packet.WeightMeasurement).mac)
+
+        // 测试包含多余空格的纯 12 位无分隔符 MAC 地址格式化
+        val jsonHex = """{"mac":"  aabbccddeeff  ", "weight":60.0}"""
+        val packetHex = PhicommS7Manager.parsePacket(jsonHex)
+        assertNotNull(packetHex)
+        assertTrue(packetHex is PhicommS7Packet.WeightMeasurement)
+        assertEquals("AA:BB:CC:DD:EE:FF", (packetHex as PhicommS7Packet.WeightMeasurement).mac)
+    }
 }

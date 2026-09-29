@@ -1,11 +1,14 @@
 package com.example.dianzicheng.data.repository
 
+import com.example.dianzicheng.data.local.AppLogger
 import com.example.dianzicheng.data.local.ScaleDao
 import com.example.dianzicheng.data.local.toDomain
 import com.example.dianzicheng.data.local.toEntity
 import com.example.dianzicheng.domain.FamilyMember
+import com.example.dianzicheng.domain.Sex
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
+import java.util.UUID
 
 /**
  * 家庭成员数据仓库，封装 DAO 操作，提供领域层可用的接口。
@@ -14,6 +17,26 @@ import kotlinx.coroutines.flow.map
  * 测量相关操作统一由 [com.example.dianzicheng.data.repository.ScaleRepository] 处理。
  */
 class ProfileRepository(private val dao: ScaleDao) {
+
+    /**
+     * 检查并确保系统中至少存在一个默认家庭成员（"自己"）。
+     * 解决新安装或未建成员时 BMI 与体成分指标无法计算归属的问题。
+     */
+    suspend fun ensureDefaultMemberExists() {
+        val existing = dao.getMembersList()
+        if (existing.isEmpty()) {
+            val defaultMember = FamilyMember(
+                id = UUID.randomUUID().toString(),
+                name = "自己",
+                sex = Sex.MALE,
+                heightCm = 170.0,
+                birthDateEpochMs = System.currentTimeMillis() - (1000L * 60 * 60 * 24 * 365 * 25), // 25岁
+                referenceWeightKg = 0.0
+            )
+            dao.insertMember(defaultMember.toEntity())
+            AppLogger.i("ProfileRepo", "已自动初始化默认家庭成员: 自己 (170cm, 男)")
+        }
+    }
 
     /**
      * 获取所有家庭成员列表（Flow，数据库变更时自动推送）。

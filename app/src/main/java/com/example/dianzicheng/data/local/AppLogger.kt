@@ -77,12 +77,16 @@ object AppLogger {
         // 触发 UI 更新（StateFlow 只在值真正变化时推送）
         _entries.value = buffer.toList()
 
-        // 同步写入 Android logcat，方便 ADB 调试
-        when (entry.level) {
-            Level.DEBUG -> android.util.Log.d(entry.tag, entry.message)
-            Level.INFO  -> android.util.Log.i(entry.tag, entry.message)
-            Level.WARN  -> android.util.Log.w(entry.tag, entry.message)
-            Level.ERROR -> android.util.Log.e(entry.tag, entry.message)
+        // 同步写入 Android logcat，方便 ADB 调试（纯 JVM 单元测试环境自动捕获并跳过）
+        try {
+            when (entry.level) {
+                Level.DEBUG -> android.util.Log.d(entry.tag, entry.message)
+                Level.INFO  -> android.util.Log.i(entry.tag, entry.message)
+                Level.WARN  -> android.util.Log.w(entry.tag, entry.message)
+                Level.ERROR -> android.util.Log.e(entry.tag, entry.message)
+            }
+        } catch (_: RuntimeException) {
+            // JVM 单元测试环境未 mock android.util.Log，忽略
         }
     }
 

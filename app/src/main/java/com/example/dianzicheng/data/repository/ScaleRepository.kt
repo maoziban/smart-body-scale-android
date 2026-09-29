@@ -87,8 +87,15 @@ class ScaleRepository(private val dao: ScaleDao) {
                 memberNameSnapshot = memberToBind.name
             )
         } else {
+            // 未匹配到成员时：优先使用系统已有成员身高或默认 170cm 兜底计算有效 BMI，杜绝 BMI 为 0.0
+            val fallbackHeightCm = members.firstOrNull()?.heightCm ?: 170.0
+            val heightM = (fallbackHeightCm.coerceIn(50.0, 250.0)) / 100.0
+            val fallbackBmi = if (measurement.bmi > 0.0) measurement.bmi
+                else if (measurement.weightKg > 0.0) (measurement.weightKg / (heightM * heightM)).coerceIn(1.0, 100.0)
+                else 0.0
             measurement.copy(
-                id = existingId ?: measurement.id.ifEmpty { UUID.randomUUID().toString() }
+                id = existingId ?: measurement.id.ifEmpty { UUID.randomUUID().toString() },
+                bmi = fallbackBmi
             )
         }
 
@@ -145,8 +152,10 @@ class ScaleRepository(private val dao: ScaleDao) {
      *
      * 匹配策略（按优先级）：
      * 1. 只有 1 个成员时，直接返回该成员（单用户家庭无歧义）
-     * 2. 多个成员时，在已有参考体重的成员中寻找差值 ≤ 5.0 kg 的最近匹配
-     * 3. 无法确定归属时返回 null，由用户手动绑定，防止数据错误归属
+     * 2. 多成员中若全为新成员（referenceWeightKg <= 0.0），优先绑定第一个未测成员
+     * 3. 在已测过体重的成员中，寻找体重最接近的成员（容差放宽至 10.0kg，适应日常体重正常浮动与衣服波动）
+     * 4. 若与已测成员差值较大，但存在未测过体重的新增成员，优先归属于未测成员
+     * 5. 兜底返回最接近的已有成员，避免数据彻底孤立
      *
      * @param weightKg 本次称量体重（公斤）
      * @param members 候选成员列表
@@ -155,22 +164,31 @@ class ScaleRepository(private val dao: ScaleDao) {
     private fun findBestMember(weightKg: Double, members: List<FamilyMember>): FamilyMember? {
         if (members.isEmpty()) return null
 
-        // 单成员：直接自动绑定
+        // 1. 单成员：直接自动绑定
         if (members.size == 1) {
             return members.first()
         }
 
-        // 多成员：在已测过体重的成员中，找差值 ≤ 5 kg 的最接近匹配
+        // 2. 多成员中若全为新成员（referenceWeightKg <= 0.0），优先绑定第一个未测成员
         val measuredMembers = members.filter { it.referenceWeightKg > 0.0 }
-        if (measuredMembers.isNotEmpty()) {
-            val best = measuredMembers.minByOrNull { abs(it.referenceWeightKg - weightKg) }
-            if (best != null && abs(best.referenceWeightKg - weightKg) <= 5.0) {
-                return best
-            }
+        if (measuredMembers.isEmpty()) {
+            return members.first()
         }
 
-        // 差值超过阈值或无参考体重：无法自动匹配，返回 null
-        return null
+        // 3. 在已测过体重的成员中，寻找体重最接近的成员（容差放宽至 10.0kg，适应日常体重正常浮动与衣服波动）
+        val best = measuredMembers.minByOrNull { abs(it.referenceWeightKg - weightKg) }
+        if (best != null && abs(best.referenceWeightKg - weightKg) <= 10.0) {
+            return best
+        }
+
+        // 4. 若与已测成员差值较大，但存在未测过体重的新增成员，优先归属于未测成员
+        val unmeasured = members.firstOrNull { it.referenceWeightKg <= 0.0 }
+        if (unmeasured != null) {
+            return unmeasured
+        }
+
+        // 5. 兜底返回最接近的已有成员，避免数据彻底孤立
+        return best ?: members.first()
     }
 
     /** 删除一条测量记录 */

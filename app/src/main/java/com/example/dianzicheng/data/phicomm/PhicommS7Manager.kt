@@ -200,11 +200,11 @@ class PhicommS7Manager(private val context: Context) {
 
         /** 将无冒号小写/大写 MAC 统一格式化为标准 XX:XX:XX:XX:XX:XX 格式 */
         fun formatMacAddress(raw: String): String {
-            val clean = raw.replace(":", "").replace("-", "").uppercase()
-            return if (clean.length == 12) {
+            val clean = raw.trim().replace(":", "").replace("-", "").replace(" ", "").uppercase()
+            return if (clean.length == 12 && clean.all { it in '0'..'9' || it in 'A'..'F' }) {
                 clean.chunked(2).joinToString(":")
             } else {
-                raw.ifEmpty { "PHICOMM:S7:WIFI" }
+                raw.trim().ifEmpty { "PHICOMM:S7:WIFI" }
             }
         }
     }

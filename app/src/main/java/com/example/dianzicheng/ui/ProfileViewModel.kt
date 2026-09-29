@@ -9,11 +9,13 @@ import com.example.dianzicheng.data.local.PreferenceManager
 import com.example.dianzicheng.data.repository.ProfileRepository
 import com.example.dianzicheng.data.repository.ScaleRepository
 import com.example.dianzicheng.domain.FamilyMember
+import com.example.dianzicheng.domain.ScaleModel
 import com.example.dianzicheng.domain.Sex
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import java.util.UUID
@@ -50,6 +52,23 @@ class ProfileViewModel(
     /** 当前已配对记住的设备名称 */
     val pairedDeviceName: StateFlow<String?> = preferenceManager.pairedDeviceName
         .stateIn(viewModelScope, SharingStarted.Lazily, null)
+
+    // ── 体脂秤型号设置 ────────────────────────────────────────────────────────
+
+    /** 当前选中的体脂秤型号（来自 DataStore，默认自动识别） */
+    val selectedScaleModel: StateFlow<ScaleModel> = preferenceManager.selectedScaleModel
+        .map { ScaleModel.fromId(it) }
+        .stateIn(viewModelScope, SharingStarted.Lazily, ScaleModel.AUTO)
+
+    /**
+     * 保存用户选择的体脂秤型号偏好
+     */
+    fun selectScaleModel(model: ScaleModel) {
+        viewModelScope.launch {
+            preferenceManager.saveSelectedScaleModel(model.id)
+            AppLogger.i("ProfileVM", "已切换体脂秤型号偏好为: ${model.displayName} (${model.id})")
+        }
+    }
 
     // ── Health Connect 设置 ───────────────────────────────────────────────────
 

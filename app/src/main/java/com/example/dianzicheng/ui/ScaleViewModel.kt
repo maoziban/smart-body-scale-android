@@ -9,6 +9,7 @@ import com.example.dianzicheng.domain.BodyAlgorithm
 import com.example.dianzicheng.domain.BodyMeasurement
 import com.example.dianzicheng.domain.Sex
 import com.example.dianzicheng.domain.FamilyMember
+import com.example.dianzicheng.domain.ScaleModel
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -125,6 +126,7 @@ class ScaleViewModel(
     }
 
     init {
+        checkBluetoothAndLocationState()
         observeBle()        // 开始监听 BLE 数据流
         observePhicommS7()  // 开始监听斐讯 S7 Wi-Fi 局域网广播
         observeMembers()    // 开始监听家庭成员列表
@@ -146,8 +148,11 @@ class ScaleViewModel(
                     val updatedSelected = if (currentSelected != null) {
                         // 同步已选成员的最新信息（如身高、出生日期变更）
                         members.firstOrNull { it.id == currentSelected.id } ?: currentSelected
+                    } else if (members.size == 1) {
+                        // 系统中仅有唯一家庭成员（如默认"自己"）时，自动选中，无歧义
+                        members.first()
                     } else {
-                        null // 保持 null，不自动绑定第一个成员
+                        null // 多成员时保持智能自动匹配模式
                     }
                     state.copy(
                         availableMembers = members,
@@ -221,10 +226,33 @@ class ScaleViewModel(
         // ── 实时体重 ──────────────────────────────────────────────────────────
         viewModelScope.launch {
             bleClient.weight.collect { weight ->
-                _uiState.update { it.copy(liveWeightKg = weight) }
+                val shouldClearImpedance = weight < 3.0 || !_uiState.value.isStable
+                _uiState.update {
+                    if (shouldClearImpedance) {
+                        it.copy(liveWeightKg = weight, impedanceOhm = 0.0)
+                    } else {
+                        it.copy(liveWeightKg = weight)
+                    }
+                }
                 if (weight >= 3.0) {
                     // 记录上秤时刻（仅在未记录时），供下秤时计算在秤时长
                     if (stepOnTimeMs == 0L) stepOnTimeMs = System.currentTimeMillis()
+
+                    // 【核心修复】：若秤正处于稳定锁定状态，且示数发生更新（如秤端微调校准 5.50 -> 5.10）
+                    // 因 StateFlow(isStable=true) 在值未变化时不会重复触发 isStable.collect，
+                    // 必须在此处响应体重变动，同步更新 currentLockedWeightKg 并更新数据库，防止历史记录残留前置瞬态值！
+                    if (bleClient.isStable.value && lastLockedSessionId != null && abs(weight - currentLockedWeightKg) >= 0.005) {
+                        AppLogger.i(TAG, "锁定状态下示数校准更新: ${String.format("%.2f", currentLockedWeightKg)}kg -> ${String.format("%.2f", weight)}kg, sessionId=${lastLockedSessionId?.take(8)}")
+                        currentLockedWeightKg = weight
+                        val sessionId = lastLockedSessionId!!
+                        activeSessionId = sessionId
+                        processMeasurement(
+                            sessionId = sessionId,
+                            timestamp = getSessionTimestamp(),
+                            commitToDb = true,
+                            explicitWeight = weight
+                        )
+                    }
 
                     // 过早锁定作废：秤可能在体重爬升过程中误报"稳定"（如爬到 18kg 时），
                     // 若实际体重随后显著超出锁定值，说明那次锁定是中间值，作废对应会话，
@@ -279,8 +307,8 @@ class ScaleViewModel(
         // ── 稳定状态 ──────────────────────────────────────────────────────────
         viewModelScope.launch {
             bleClient.isStable.collect { stable ->
-                _uiState.update { it.copy(isStable = stable) }
                 if (stable) {
+                    _uiState.update { it.copy(isStable = true) }
                     clearSessionJob?.cancel()
                     val w = bleClient.weight.value
                     if (w >= 3.0) {
@@ -290,8 +318,7 @@ class ScaleViewModel(
                             && lastWeightZeroMs > 0
                             && System.currentTimeMillis() - lastWeightZeroMs <= CONTINUATION_AFTER_ZERO_GRACE_MS
                         val isContinuation = lastLockedSessionId != null
-                            && (!sessionInterrupted || interruptionWithinGrace)
-                            && abs(w - currentLockedWeightKg) <= WEIGHT_CONTINUATION_TOLERANCE_KG
+                            && (!sessionInterrupted || (interruptionWithinGrace && abs(w - currentLockedWeightKg) <= WEIGHT_CONTINUATION_TOLERANCE_KG))
                         if (isContinuation) {
                             val sessionId = lastLockedSessionId!!
                             activeSessionId = sessionId
@@ -302,7 +329,9 @@ class ScaleViewModel(
                             processMeasurement(
                                 sessionId = sessionId,
                                 timestamp = getSessionTimestamp(),
-                                commitToDb = true
+                                commitToDb = true,
+                                explicitImpedance = bleClient.impedance.value,
+                                explicitWeight = w
                             )
                         } else {
                             currentLockedWeightKg = w
@@ -313,16 +342,21 @@ class ScaleViewModel(
                             activeSessionTimestamp = System.currentTimeMillis()
                             sessionInterrupted = false
                             sessionCommitted = false
-                            // 锁定时立即写入数据库，确保穿袜、普通秤、老人小孩等无阻抗场景也能及时安全持久化
+                            // 锁定时立即写入数据库，确保穿袜、普通秤、老人小孩等无阻抗场景也能及时安全持久化。
+                            // 显式传入当前 bleClient.impedance.value（若穿袜或未踩电极，此时严格为 0.0）
                             processMeasurement(
                                 sessionId = newSessionId,
                                 timestamp = activeSessionTimestamp,
-                                commitToDb = true
+                                commitToDb = true,
+                                explicitImpedance = bleClient.impedance.value,
+                                explicitWeight = w
                             )
                         }
                     }
                 } else {
-                    // 体重不稳定：延迟 300ms 后清空 activeSessionId，
+                    // 体重不稳定：UI 上的阻抗立即归零，防止动态变动时残留上一轮阻抗
+                    _uiState.update { it.copy(isStable = false, impedanceOhm = 0.0) }
+                    // 延迟 300ms 后清空 activeSessionId，
                     // 给可能延迟到达的阻抗数据留出补充写入的窗口期。
                     // 使用受管协程句柄，避免新稳定事件被先前的延迟任务误销毁。
                     clearSessionJob?.cancel()
@@ -353,7 +387,8 @@ class ScaleViewModel(
                     processMeasurement(
                         sessionId = sessionId,
                         timestamp = getSessionTimestamp(),
-                        commitToDb = true
+                        commitToDb = true,
+                        explicitImpedance = imp
                     )
                 }
             }
@@ -374,7 +409,11 @@ class ScaleViewModel(
         // ── 候选设备列表 ──────────────────────────────────────────────────────
         viewModelScope.launch {
             bleClient.discoveredScales.collect { list ->
-                _uiState.update { it.copy(discoveredScales = list) }
+                _uiState.update { state ->
+                    val wifiScales = state.discoveredScales.filter { it.isWifiScale }
+                    val merged = (list + wifiScales).distinctBy { it.address }
+                    state.copy(discoveredScales = merged)
+                }
             }
         }
     }
@@ -388,6 +427,7 @@ class ScaleViewModel(
             combine(pref.pairedMac, pref.pairedDeviceName) { mac, name ->
                 Pair(mac, name)
             }.collect { (mac, name) ->
+                bleClient.lastPairedMac = mac
                 _uiState.update {
                     it.copy(
                         pairedDeviceMac = mac,
@@ -397,7 +437,33 @@ class ScaleViewModel(
                 }
                 if (mac.isNullOrEmpty()) {
                     bleClient.disconnectAndReset()
+                } else {
+                    bleClient.isPairingMode = false
+                    if (bleClient.connectionState.value == BleScaleClient.ConnectionState.IDLE && bleClient.isBluetoothEnabled()) {
+                        startScanning()
+                    }
                 }
+            }
+        }
+        viewModelScope.launch {
+            pref.selectedScaleModel.collect { modelId ->
+                val model = ScaleModel.fromId(modelId)
+                _uiState.update { it.copy(selectedScaleModel = model) }
+                bleClient.preferredModel = model
+            }
+        }
+    }
+
+    /**
+     * 用户切换体脂秤型号偏好。
+     * 同步更新 UI 状态、BLE 客户端优先协议，并持久化到 DataStore。
+     */
+    fun selectScaleModel(model: ScaleModel) {
+        _uiState.update { it.copy(selectedScaleModel = model) }
+        bleClient.preferredModel = model
+        preferenceManager?.let { pref ->
+            viewModelScope.launch {
+                pref.saveSelectedScaleModel(model.id)
             }
         }
     }
@@ -429,9 +495,11 @@ class ScaleViewModel(
         sessionId: String,
         timestamp: Long,
         commitToDb: Boolean,
-        explicitImpedance: Double? = null
+        explicitImpedance: Double? = null,
+        explicitWeight: Double? = null
     ) {
-        val weight = currentLockedWeightKg
+        val weight = explicitWeight ?: currentLockedWeightKg
+        currentLockedWeightKg = weight
         if (weight < 3.0) return // 体重过低，不处理（防止误触、放物品等情况）
         val impedance = explicitImpedance ?: bleClient.impedance.value
 
@@ -453,20 +521,29 @@ class ScaleViewModel(
                         birthDateEpochMs = targetMember.birthDateEpochMs
                     )
                 } else {
-                    // 没有匹配成员：只记录体重，体脂等全部为 0，不使用虚假参数误导用户
+                    // 没有精确匹配到成员时（如首测新成员、体重差异悬殊、或未建成员）：
+                    // 获取参考身高：已选成员 > 首个可用成员 > 默认 170.0cm，确保 BMI 始终有效计算呈现在卡片上
+                    val fallbackMember = _uiState.value.selectedMember
+                        ?: _uiState.value.availableMembers.firstOrNull()
+                    val heightCm = fallbackMember?.heightCm ?: 170.0
+                    val heightM = (heightCm.coerceIn(50.0, 250.0)) / 100.0
+                    val calculatedBmi = if (weight > 0.0) {
+                        (weight / (heightM * heightM)).coerceIn(1.0, 100.0)
+                    } else 0.0
+
                     BodyMeasurement(
                         id = "",
                         measuredAtEpochMs = timestamp,
                         weightKg = weight,
                         impedanceOhm = impedance,
-                        bmi = 0.0,
+                        bmi = calculatedBmi,
                         bodyFatPct = 0.0,
                         muscleKg = 0.0,
                         waterPct = 0.0,
                         proteinPct = 0.0,
                         boneMassKg = 0.0,
-                        memberId = null,
-                        memberNameSnapshot = null
+                        memberId = fallbackMember?.id,
+                        memberNameSnapshot = fallbackMember?.name
                     )
                 }
 
@@ -576,11 +653,20 @@ class ScaleViewModel(
         // 监听斐讯 S7 局域网设备探测发现
         viewModelScope.launch {
             s7.discoveredDevice.collect { device ->
-                if (device != null && _uiState.value.discoveredDeviceMac == null) {
-                    _uiState.update {
-                        it.copy(
-                            discoveredDeviceName = device.first,
-                            discoveredDeviceMac = device.second
+                if (device != null) {
+                    val s7Item = BleScaleClient.DiscoveredScaleDevice(
+                        name = device.first,
+                        address = device.second,
+                        rssi = 0,
+                        isBroadcastScale = false,
+                        isWifiScale = true
+                    )
+                    _uiState.update { state ->
+                        val updatedList = (state.discoveredScales.filter { it.address != device.second } + s7Item)
+                        state.copy(
+                            discoveredScales = updatedList,
+                            discoveredDeviceName = state.discoveredDeviceName ?: device.first,
+                            discoveredDeviceMac = state.discoveredDeviceMac ?: device.second
                         )
                     }
                 }
@@ -594,9 +680,21 @@ class ScaleViewModel(
                 val w = meas.weightKg
                 if (w < 3.0) return@collect
 
+                // 若处于配对扫描模式，不将称重数据入库
+                if (bleClient.isPairingMode) return@collect
+
+                // 若已记住设备，严格校验 MAC 地址匹配，防止局域网内其他斐讯 S7 串台或覆盖其他品牌秤
+                val pairedMac = bleClient.lastPairedMac
+                val normalizedMeasMac = meas.mac.replace("-", ":").trim()
+                val normalizedPairedMac = pairedMac?.replace("-", ":")?.trim()
+                if (normalizedPairedMac.isNullOrEmpty() || !normalizedMeasMac.equals(normalizedPairedMac, ignoreCase = true)) {
+                    AppLogger.d(TAG, "收到非绑定设备或未绑定时的斐讯 S7 称重广播，忽略: ${meas.mac} (绑定: $pairedMac)")
+                    return@collect
+                }
+
                 val now = System.currentTimeMillis()
                 // 重复 UDP 广播报文过滤 (防抖：短时间内相同的体重与时间戳视为重传，避免重复存库)
-                val isExactDuplicate = (meas.timestampEpochMs == lastPhicommTimestampEpochMs && kotlin.math.abs(w - lastPhicommWeightKg) < 0.05)
+                val isExactDuplicate = (now - lastPhicommReceiptTimeMs < 5000L && meas.timestampEpochMs == lastPhicommTimestampEpochMs && kotlin.math.abs(w - lastPhicommWeightKg) < 0.05)
                     || (now - lastPhicommReceiptTimeMs < 1500L && kotlin.math.abs(w - lastPhicommWeightKg) < 0.05)
 
                 if (isExactDuplicate && lastLockedSessionId != null) {
@@ -651,6 +749,7 @@ class ScaleViewModel(
                         it.copy(
                             liveWeightKg = 0.0,
                             isStable = false,
+                            impedanceOhm = 0.0,
                             connection = BleScaleClient.ConnectionState.CONNECTED
                         )
                     }
@@ -682,12 +781,32 @@ class ScaleViewModel(
     }
 
     /**
+     * 检查系统蓝牙与定位服务开关状态，并刷新 UI 状态。
+     */
+    fun checkBluetoothAndLocationState() {
+        val btEnabled = bleClient.isBluetoothEnabled()
+        val locEnabled = bleClient.isLocationEnabled()
+        _uiState.update {
+            it.copy(
+                isBluetoothEnabled = btEnabled,
+                isLocationEnabled = locEnabled
+            )
+        }
+    }
+
+    /**
      * 启动手动配对发现扫描流程。
      * 进入发现模式，收集附近所有候选体脂秤设备，等待用户手动点击选择。
      */
     fun startPairingScan() {
         AppLogger.i(TAG, "启动手动配对扫描流程")
+        checkBluetoothAndLocationState()
+        if (!bleClient.isBluetoothEnabled()) {
+            AppLogger.w(TAG, "系统蓝牙未开启，跳过配对扫描")
+            return
+        }
         resetMeasurementUi()
+        _uiState.update { it.copy(discoveredScales = emptyList()) }
         bleClient.startPairingScan()
         phicommS7Manager?.startListening()
     }
@@ -702,7 +821,25 @@ class ScaleViewModel(
         viewModelScope.launch {
             preferenceManager?.savePairedDevice(device.address, device.name)
         }
-        bleClient.manualConnect(device)
+        // 界面立即同步更新已绑定设备信息，消除 DataStore 异步落库延迟引起的界面闪烁
+        _uiState.update {
+            it.copy(
+                pairedDeviceMac = device.address,
+                pairedDeviceName = device.name,
+                isDeviceRemembered = true
+            )
+        }
+        if (device.isWifiScale) {
+            // Wi-Fi 局域网设备不需要且无法建立 BLE GATT 连接
+            bleClient.lastPairedMac = device.address
+            _uiState.update {
+                it.copy(
+                    connection = BleScaleClient.ConnectionState.CONNECTED
+                )
+            }
+        } else {
+            bleClient.manualConnect(device)
+        }
     }
 
     /**
@@ -713,6 +850,9 @@ class ScaleViewModel(
         viewModelScope.launch {
             preferenceManager?.clearPairedMac()
         }
+        lastPhicommReceiptTimeMs = 0L
+        lastPhicommTimestampEpochMs = 0L
+        lastPhicommWeightKg = 0.0
         bleClient.disconnectAndReset()
     }
 
@@ -722,16 +862,35 @@ class ScaleViewModel(
      */
     fun startScanning() {
         AppLogger.i(TAG, "请求启动称重扫描...")
+        checkBluetoothAndLocationState()
+        if (!bleClient.isBluetoothEnabled()) {
+            AppLogger.w(TAG, "系统蓝牙未开启，跳过自动连接扫描")
+            return
+        }
         resetMeasurementUi()
 
-        // 仅当已有记住的设备时，才允许自动连接扫描
-        if (bleClient.lastPairedMac.isNullOrEmpty()) {
+        // 确保退出配对扫描模式，切入常规称量监听流程
+        bleClient.isPairingMode = false
+
+        // 优先使用 bleClient.lastPairedMac，若空则尝试从 UI 状态恢复
+        val targetMac = bleClient.lastPairedMac ?: _uiState.value.pairedDeviceMac
+        if (targetMac.isNullOrEmpty()) {
             AppLogger.i(TAG, "尚未记住任何设备，不执行自动连接扫描，等待手动配对")
             return
         }
+        bleClient.lastPairedMac = targetMac
 
         bleClient.startScan()
         phicommS7Manager?.startListening()
+    }
+
+    /**
+     * 退出配对界面时停止配对扫描并重置配对模式。
+     */
+    fun stopPairingScan() {
+        AppLogger.i(TAG, "退出配对模式，重置扫描状态")
+        bleClient.stopScan()
+        bleClient.isPairingMode = false
     }
 
     override fun onCleared() {

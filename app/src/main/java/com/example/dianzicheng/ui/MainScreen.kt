@@ -1,5 +1,6 @@
 package com.example.dianzicheng.ui
 
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.DateRange
@@ -22,7 +23,7 @@ fun MainScreen(
     scaleViewModel: ScaleViewModel,
     historyViewModel: HistoryViewModel,
     profileViewModel: ProfileViewModel,
-    isPairingComplete: Boolean,
+    isPairingComplete: Boolean?,
     onPairingComplete: () -> Unit,
     onResetPairing: () -> Unit = { profileViewModel.resetPairing() }
 ) {
@@ -33,6 +34,15 @@ fun MainScreen(
     val items = listOf("测量", "历史", "我的")
     val routes = listOf("dashboard", "history", "profile")
     val icons = listOf(Icons.Default.Home, Icons.Default.DateRange, Icons.Default.Person)
+
+    if (isPairingComplete == null) {
+        // DataStore 异步读取中，渲染空背景，杜绝因初值 false 瞬时挂载 PairingScreen 并误触发 startPairingScan()
+        Surface(
+            modifier = Modifier.fillMaxSize(),
+            color = MaterialTheme.colorScheme.background
+        ) {}
+        return
+    }
 
     if (!isPairingComplete) {
         PairingScreen(scaleViewModel, onPairingComplete)

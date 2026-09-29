@@ -26,7 +26,10 @@ class WebDavManager(private val dao: ScaleDao) {
         .build()
 
     private fun normalizeUrl(url: String): String {
-        val trimmed = url.trim()
+        var trimmed = url.trim()
+        if (!trimmed.startsWith("http://", ignoreCase = true) && !trimmed.startsWith("https://", ignoreCase = true)) {
+            trimmed = "https://$trimmed"
+        }
         return if (!trimmed.endsWith(".json")) {
             if (trimmed.endsWith("/")) "${trimmed}scale_backup.json" else "$trimmed/scale_backup.json"
         } else {
@@ -39,17 +42,27 @@ class WebDavManager(private val dao: ScaleDao) {
             val targetUrl = normalizeUrl(url)
             val credential = Credentials.basic(user, pass)
 
+            // 使用带 Range: bytes=0-0 的 GET 请求代替 HEAD 请求。
+            // 坚果云、Alist、Nextcloud 等许多 WebDAV 服务在某些路径上会拒绝 HEAD 并返回 405 Method Not Allowed，
+            // 而 GET Range: bytes=0-0 既能保证最小网络开销，又能兼容几乎所有 WebDAV 服务器。
             val request = Request.Builder()
                 .url(targetUrl)
                 .header("Authorization", credential)
-                .head()
+                .header("Range", "bytes=0-0")
+                .get()
                 .build()
 
             client.newCall(request).execute().use { response ->
-                if (response.isSuccessful || response.code == 404) {
-                    Result.success("连接成功！服务器可用")
-                } else {
-                    Result.failure(Exception("连接失败，HTTP 状态码: ${response.code}"))
+                when {
+                    response.isSuccessful || response.code == 206 || response.code == 404 -> {
+                        Result.success("连接成功！服务器可用")
+                    }
+                    response.code == 401 || response.code == 403 -> {
+                        Result.failure(Exception("认证失败：用户名或密码错误 (HTTP ${response.code})"))
+                    }
+                    else -> {
+                        Result.failure(Exception("连接失败，HTTP 状态码: ${response.code}"))
+                    }
                 }
             }
         } catch (e: Exception) {

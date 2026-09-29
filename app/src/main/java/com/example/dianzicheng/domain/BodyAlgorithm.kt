@@ -36,12 +36,12 @@ object BodyAlgorithm {
         // 限制身高在生理合理范围（50~250cm），彻底杜绝 heightCm <= 0 时的除以零或 NaN 异常
         val safeHeightCm = heightCm.coerceIn(50.0, 250.0)
         val heightM = safeHeightCm / 100.0
-        val bmi = (weightKg / (heightM * heightM)).coerceIn(5.0, 100.0)
+        val bmi = if (weightKg > 0.0) (weightKg / (heightM * heightM)).coerceIn(1.0, 100.0) else 0.0
         val age = calculateAge(birthDateEpochMs)
 
-        // 仅当测得有效阻抗（> 0.0Ω）时，严格使用 BIA 生物电阻抗计算体脂及身体成分；
+        // 仅当测得有效阻抗（> 0.0Ω 且体重有效）时，严格使用 BIA 生物电阻抗计算体脂及身体成分；
         // 否则所有 BIA 指标保持 0.0（不使用估算回退）
-        val hasImpedance = impedanceOhm > 0.0
+        val hasImpedance = impedanceOhm > 0.0 && weightKg >= 3.0
 
         // ── 体脂率（%）─────────────────────────────────────────────────────
         // 使用 BIA 公式：综合 BMI、年龄、阻抗三个维度加权计算
@@ -115,6 +115,10 @@ object BodyAlgorithm {
         val today = Calendar.getInstance()
         val birthDate = Calendar.getInstance().apply {
             timeInMillis = birthDateEpochMs
+        }
+        if (birthDate.after(today)) {
+            AppLogger.w("BodyAlgorithm", "出生日期在未来（birthDateEpochMs=$birthDateEpochMs），使用默认年龄 30 岁参与体成分计算")
+            return 30
         }
         var age = today.get(Calendar.YEAR) - birthDate.get(Calendar.YEAR)
         // 今年生日未过：年龄再减 1（使用月/日比较，避免闰年 DAY_OF_YEAR 偏差问题）

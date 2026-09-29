@@ -38,6 +38,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.example.dianzicheng.data.local.AppLogger
 import com.example.dianzicheng.domain.FamilyMember
+import com.example.dianzicheng.domain.ScaleModel
 import com.example.dianzicheng.domain.Sex
 import com.example.dianzicheng.ui.theme.电子秤Theme
 import java.text.SimpleDateFormat
@@ -53,6 +54,8 @@ fun ProfileContent(
     onResetPairing: () -> Unit,
     pairedMac: String? = null,
     pairedDeviceName: String? = null,
+    selectedScaleModel: ScaleModel = ScaleModel.AUTO,
+    onSelectScaleModel: (ScaleModel) -> Unit = {},
     healthConnectEnabled: Boolean,
     onToggleHealthConnect: (Boolean) -> Unit,
     onRequestHealthConnectPermissions: () -> Unit,
@@ -79,6 +82,7 @@ fun ProfileContent(
     var showWebdavDialog by remember { mutableStateOf(false) }
     var showLogDialog by remember { mutableStateOf(false) }
     var showUnpairConfirmDialog by remember { mutableStateOf(false) }
+    var showModelDialog by remember { mutableStateOf(false) }
     var memberToDelete by remember { mutableStateOf<FamilyMember?>(null) }
 
     val dateFormat = remember { SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()) }
@@ -384,6 +388,16 @@ fun ProfileContent(
                         color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
                     )
                     SettingsItem(
+                        title = "体脂秤型号与品牌",
+                        subtitle = "${selectedScaleModel.displayName} · 点击切换型号偏好",
+                        icon = Icons.Default.Tune,
+                        onClick = { showModelDialog = true }
+                    )
+                    HorizontalDivider(
+                        modifier = Modifier.padding(horizontal = 16.dp),
+                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+                    )
+                    SettingsItem(
                         title = "查看运行日志",
                         subtitle = if (logEntries.isEmpty()) "暂无日志" else "共 ${logEntries.size} 条记录",
                         icon = Icons.AutoMirrored.Filled.Article,
@@ -498,6 +512,14 @@ fun ProfileContent(
                 onTestWebdavConnection(url, user, pass)
             },
             isOperating = isOperating
+        )
+    }
+
+    if (showModelDialog) {
+        SelectScaleModelDialog(
+            currentModel = selectedScaleModel,
+            onModelSelected = onSelectScaleModel,
+            onDismiss = { showModelDialog = false }
         )
     }
 }
@@ -949,6 +971,7 @@ fun ProfileScreen(
     val logEntries by viewModel.logEntries.collectAsState()
     val pairedMac by viewModel.pairedMac.collectAsState()
     val pairedDeviceName by viewModel.pairedDeviceName.collectAsState()
+    val selectedScaleModel by viewModel.selectedScaleModel.collectAsState()
 
     val permissionLauncher = rememberLauncherForActivityResult(
         contract = PermissionController.createRequestPermissionResultContract()
@@ -974,6 +997,8 @@ fun ProfileScreen(
         onResetPairing = { viewModel.resetPairing() },
         pairedMac = pairedMac,
         pairedDeviceName = pairedDeviceName,
+        selectedScaleModel = selectedScaleModel,
+        onSelectScaleModel = { viewModel.selectScaleModel(it) },
         healthConnectEnabled = healthConnectEnabled,
         onToggleHealthConnect = { enabled ->
             viewModel.setHealthConnectEnabled(enabled)

@@ -8,6 +8,7 @@ import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
 import android.content.Context
 import com.example.dianzicheng.data.local.AppLogger
+import com.example.dianzicheng.domain.ScaleModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import java.util.*
@@ -36,8 +37,8 @@ class BleScaleClient(private val context: Context) {
     // -------------------------------------------------------------------------
 
     /** 系统蓝牙适配器，从 BluetoothManager 获取；若设备无 BT 则为 null。 */
-    private val bluetoothAdapter: BluetoothAdapter? =
-        (context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager).adapter
+    private val bluetoothAdapter: BluetoothAdapter?
+        get() = (context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)?.adapter
 
     /** 当前活跃的 GATT 连接实例；未连接时为 null。 */
     private var bluetoothGatt: BluetoothGatt? = null
@@ -49,7 +50,10 @@ class BleScaleClient(private val context: Context) {
         MultiScalePacketParser.UUID_SERVICE_SIG_BCS,         // 0x181B (蓝牙 SIG 标准体脂秤/小米)
         MultiScalePacketParser.UUID_SERVICE_CHIPSEA_OKOK,    // 0xFFF0 (芯海科技 / OKOK 方案)
         MultiScalePacketParser.UUID_SERVICE_GENERIC_FFE0,    // 0xFFE0 (通用透传秤)
-        MultiScalePacketParser.UUID_SERVICE_XIAOMI_WECHAT    // 0xFEE7 (小米/微信运动秤)
+        MultiScalePacketParser.UUID_SERVICE_XIAOMI_WECHAT,   // 0xFEE7 (小米/微信运动秤)
+        UUID.fromString("0000FFA0-0000-1000-8000-00805F9B34FB"), // Yolanda / Fitdays / 沃莱扩展
+        UUID.fromString("0000FFE5-0000-1000-8000-00805F9B34FB"), // 芯海 / OKOK 扩展
+        UUID.fromString("0000FEE0-0000-1000-8000-00805F9B34FB")  // 微信硬件 / 小米扩展
     )
 
     // -------------------------------------------------------------------------
@@ -100,7 +104,11 @@ class BleScaleClient(private val context: Context) {
         val name: String,
         val address: String,
         val rssi: Int = 0,
-        val isBroadcastScale: Boolean = false
+        val isBroadcastScale: Boolean = false,
+        val isWifiScale: Boolean = false,
+        val isConfirmedScale: Boolean = true,
+        val matchedModel: ScaleModel = ScaleModel.AUTO,
+        val protocolName: String = ""
     )
 
     /**
@@ -117,6 +125,9 @@ class BleScaleClient(private val context: Context) {
     // -------------------------------------------------------------------------
     // 外部可读写的辅助属性
     // -------------------------------------------------------------------------
+
+    /** 用户手动指定的体脂秤型号偏好（默认为 AUTO 智能自动识别） */
+    var preferredModel: ScaleModel = ScaleModel.AUTO
 
     /** 上次成功配对并记住的设备 MAC 地址。只有该值非空时，才允许自动连接。 */
     var lastPairedMac: String? = null
@@ -174,6 +185,52 @@ class BleScaleClient(private val context: Context) {
     }
 
     /**
+     * 根据设备名称与广播包特征，推断其对应的体脂秤型号枚举。
+     */
+    fun detectMatchedModel(deviceName: String?, scanRecord: android.bluetooth.le.ScanRecord?): ScaleModel {
+        val name = deviceName ?: ""
+        // 优先检查 Service UUID 是否包含 AFU 专属服务 (0xFFB0)，或设备名明确包含 AFU/WL-TZ/TZ-A1
+        if (scanRecord?.serviceUuids?.any { it.uuid.toString().uppercase().contains("FFB0") } == true ||
+            name.contains("AFU", ignoreCase = true) ||
+            name.contains("WL-TZ", ignoreCase = true) ||
+            name.contains("TZ-A1", ignoreCase = true)) {
+            return ScaleModel.AFU_PROTOCOL
+        }
+
+        val advData = MultiScalePacketParser.parseAdvertisement(scanRecord, preferredModel)
+        if (advData?.protocolName?.contains("Xiaomi", ignoreCase = true) == true) {
+            return if (advData.protocolName.contains("2")) ScaleModel.XIAOMI_SCALE_2 else ScaleModel.XIAOMI_SCALE_1
+        }
+        if (advData?.protocolName?.contains("Yolanda", ignoreCase = true) == true ||
+            advData?.protocolName?.contains("Boohee", ignoreCase = true) == true) {
+            return ScaleModel.BOOHEE_YOLANDA
+        }
+        if (name.contains("Yolanda", ignoreCase = true) || name.contains("Boohee", ignoreCase = true) ||
+            name.contains("薄荷", ignoreCase = true) || name.contains("轻牛", ignoreCase = true) ||
+            name.startsWith("BH_", ignoreCase = true) || name.startsWith("BH-", ignoreCase = true) ||
+            name.contains("Fitdays", ignoreCase = true) || name.contains("合泰", ignoreCase = true)) {
+            return ScaleModel.BOOHEE_YOLANDA
+        }
+        if (name.startsWith("MIBFS", ignoreCase = true) || name.contains("米家", ignoreCase = true) ||
+            name.contains("小米", ignoreCase = true) || name.startsWith("MISCALE", ignoreCase = true) ||
+            name.equals("MI_SCALE", ignoreCase = true)) {
+            return ScaleModel.XIAOMI_SCALE_2
+        }
+        if (name.contains("OKOK", ignoreCase = true) || name.contains("Chipsea", ignoreCase = true) ||
+            name.contains("芯海", ignoreCase = true) || name.startsWith("CS-", ignoreCase = true)) {
+            return ScaleModel.OKOK_CHIPSEA
+        }
+        if (name.contains("Senssun", ignoreCase = true) || name.contains("香山", ignoreCase = true) ||
+            name.contains("CAMRY", ignoreCase = true)) {
+            return ScaleModel.SENSSUN
+        }
+        if (name.startsWith("S9", ignoreCase = true) || name.startsWith("zS7", ignoreCase = true)) {
+            return ScaleModel.PHICOMM_S9
+        }
+        return ScaleModel.AUTO
+    }
+
+    /**
      * 综合多维度规则判断某个扫描结果是否来自目标体脂秤设备。
      *
      * 匹配优先级（由高到低）：
@@ -202,11 +259,11 @@ class BleScaleClient(private val context: Context) {
         if (hasService) return true
 
         // 3. 广播数据包直接可解析出有效体重（如小米秤 Service Data、免配对广播秤）
-        if (MultiScalePacketParser.parseAdvertisement(scanRecord) != null) {
+        if (MultiScalePacketParser.parseAdvertisement(scanRecord, preferredModel) != null) {
             return true
         }
 
-        // 4. 称重设备常见品牌与关键词精确匹配（避免使用宽泛包含如 "MI", "S7", "S9"，防止误连路由器、扫地机、手机等设备）
+        // 4. 称重设备常见品牌与关键词精确匹配（覆盖主流与小众品牌）
         val nameMatched = deviceName?.let { name ->
             name.contains("AFU", ignoreCase = true) ||
             name.contains("WL-TZ", ignoreCase = true) ||
@@ -216,53 +273,125 @@ class BleScaleClient(private val context: Context) {
             name.contains("体脂", ignoreCase = true) ||
             name.contains("电子秤", ignoreCase = true) ||
             name.contains("体重", ignoreCase = true) ||
+            name.contains("称重", ignoreCase = true) ||
+            name.contains("健康秤", ignoreCase = true) ||
             name.startsWith("MIBFS", ignoreCase = true) ||
             name.startsWith("MISCALE", ignoreCase = true) ||
-            name.contains("小米体重", ignoreCase = true) ||
-            name.contains("小米体脂", ignoreCase = true) ||
-            name.contains("米家体脂", ignoreCase = true) ||
-            name.contains("米家体重", ignoreCase = true) ||
+            name.contains("小米", ignoreCase = true) ||
+            name.contains("米家", ignoreCase = true) ||
             name.equals("MI_SCALE", ignoreCase = true) ||
             name.contains("OKOK", ignoreCase = true) ||
             name.contains("Yolanda", ignoreCase = true) ||
             name.contains("Senssun", ignoreCase = true) ||
             name.contains("ICOMON", ignoreCase = true) ||
             name.contains("沃莱", ignoreCase = true) ||
+            name.contains("BOOHEE", ignoreCase = true) ||
+            name.contains("薄荷", ignoreCase = true) ||
+            name.startsWith("BH_", ignoreCase = true) ||
+            name.startsWith("BH-", ignoreCase = true) ||
             name.contains("香山", ignoreCase = true) ||
+            name.contains("CAMRY", ignoreCase = true) ||
             name.contains("云麦", ignoreCase = true) ||
+            name.contains("YUNMAI", ignoreCase = true) ||
             name.contains("Phicomm", ignoreCase = true) ||
             name.contains("斐讯", ignoreCase = true) ||
             name.startsWith("zS7", ignoreCase = true) ||
             name.startsWith("S7_", ignoreCase = true) ||
             name.startsWith("S9_", ignoreCase = true) ||
             name.equals("S7", ignoreCase = true) ||
-            name.equals("S9", ignoreCase = true)
+            name.equals("S9", ignoreCase = true) ||
+            name.contains("Picooc", ignoreCase = true) ||
+            name.contains("有品", ignoreCase = true) ||
+            name.contains("Keep", ignoreCase = true) ||
+            name.contains("Fitdays", ignoreCase = true) ||
+            name.contains("QNDoctor", ignoreCase = true) ||
+            name.contains("QN-", ignoreCase = true) ||
+            name.contains("轻牛", ignoreCase = true) ||
+            name.contains("Sinocare", ignoreCase = true) ||
+            name.contains("三诺", ignoreCase = true) ||
+            name.contains("Omron", ignoreCase = true) ||
+            name.contains("欧姆龙", ignoreCase = true) ||
+            name.contains("Tanita", ignoreCase = true) ||
+            name.contains("百利达", ignoreCase = true) ||
+            name.contains("Lifesense", ignoreCase = true) ||
+            name.contains("乐心", ignoreCase = true) ||
+            name.contains("InBody", ignoreCase = true) ||
+            name.contains("CHIPSEA", ignoreCase = true) ||
+            name.contains("芯海", ignoreCase = true) ||
+            name.startsWith("CS-", ignoreCase = true) ||
+            name.contains("BT_SCALE", ignoreCase = true) ||
+            name.contains("BLE_SCALE", ignoreCase = true) ||
+            name.contains("SMART_SCALE", ignoreCase = true) ||
+            name.contains("SWAN", ignoreCase = true) ||
+            name.startsWith("SW-", ignoreCase = true) ||
+            name.contains("iChoice", ignoreCase = true) ||
+            name.startsWith("CF-", ignoreCase = true) ||
+            name.startsWith("CF", ignoreCase = true) ||
+            name.startsWith("WS-", ignoreCase = true) ||
+            name.startsWith("YG", ignoreCase = true) ||
+            name.startsWith("C08", ignoreCase = true) ||
+            name.startsWith("C09", ignoreCase = true) ||
+            name.startsWith("C10", ignoreCase = true) ||
+            name.contains("Health", ignoreCase = true) ||
+            name.contains("Body", ignoreCase = true) ||
+            name.contains("BIA", ignoreCase = true) ||
+            name.contains("Fat", ignoreCase = true) ||
+            name.startsWith("BLE-", ignoreCase = true) ||
+            name.startsWith("BLE0", ignoreCase = true) ||
+            name.startsWith("BLE1", ignoreCase = true) ||
+            name.contains("合泰", ignoreCase = true) ||
+            name.contains("Fit", ignoreCase = true)
         } == true
         if (nameMatched) return true
 
-        // 5. 解析 BLE 广播数据中的厂商自定义数据包结构 (0xFF 或 0x16)，校验 0xAC 帧头
-        var hasValidAcHeader = false
-        if (rawBytes != null && rawBytes.size >= 6) {
+        // 5. 检查广播 AD 结构中是否声明了蓝牙 SIG 标准外观类型 (Appearance = 0x0400..0x043F 体重/体脂秤)
+        if (rawBytes != null && rawBytes.size >= 4) {
             var i = 0
-            // 遍历广播原始数据的每一个 AD 结构
+            while (i < rawBytes.size - 3) {
+                val len = rawBytes[i].toInt() and 0xFF
+                if (len == 0 || i + len >= rawBytes.size) break
+                val type = rawBytes[i + 1].toInt() and 0xFF
+                if (type == 0x19 && len >= 3) { // 0x19 = Appearance
+                    val appearance = (rawBytes[i + 2].toInt() and 0xFF) or ((rawBytes[i + 3].toInt() and 0xFF) shl 8)
+                    if (appearance in 0x0400..0x043F) return true
+                }
+                i += len + 1
+            }
+        }
+
+        // 6. 解析 BLE 广播数据中的厂商自定义数据包结构 (0xFF 或 0x16)，校验 0xAC / OKOK / Yolanda 协议特征
+        if (rawBytes != null && rawBytes.size >= 4) {
+            var i = 0
             while (i < rawBytes.size - 2) {
                 val len = rawBytes[i].toInt() and 0xFF
                 if (len == 0 || i + len >= rawBytes.size) break
                 val type = rawBytes[i + 1].toInt() and 0xFF
-                // 仅检查厂商数据（0xFF）或服务数据（0x16）类型的 AD 段
-                if ((type == 0xFF || type == 0x16) && len > 1) {
-                    val firstDataByte = rawBytes[i + 2].toInt() and 0xFF
-                    // 数据段首字节为 0xAC 则认为是 AFU 协议帧
-                    if (firstDataByte == 0xAC) {
-                        hasValidAcHeader = true
-                        break
+                if (type == 0xFF && len >= 3) {
+                    val companyId = (rawBytes[i + 2].toInt() and 0xFF) or ((rawBytes[i + 3].toInt() and 0xFF) shl 8)
+                    // 0x01A7 (Yolanda / Fitdays), 0x0157 (Huami / Xiaomi), 0x0590 (Chipsea), 0x0209 (Yolanda 变体), 0x00D2 (Dialog), 0x01DA (Telink)
+                    if (companyId in listOf(0x01A7, 0x0157, 0x0590, 0x0209, 0x00D2, 0x01DA)) return true
+                }
+                if ((type == 0xFF || type == 0x16) && len >= 2) {
+                    val b0 = rawBytes[i + 2].toInt() and 0xFF
+                    // 无 Company ID 前缀时首字节为 0xAC / 0xA2 / 0xA3 / 0xCA
+                    if (b0 == 0xAC || b0 == 0xA2 || b0 == 0xA3 || b0 == 0xCA) return true
+                    // 存在标准 2B Company ID 时 (len >= 4)，第 3 字节为 0xAC / 0xCA
+                    if (len >= 4) {
+                        val b2 = rawBytes[i + 4].toInt() and 0xFF
+                        if (b2 == 0xAC || b2 == 0xA2 || b2 == 0xA3 || b2 == 0xCA) return true
+                    }
+                    // 检查是否为 OKOK / 芯海 0x10 / 0xCF 广播帧
+                    if (b0 == 0x10 || b0 == 0xCF) return true
+                    if (len >= 4) {
+                        val b2 = rawBytes[i + 4].toInt() and 0xFF
+                        if (b2 == 0x10 || b2 == 0xCF) return true
                     }
                 }
                 i += len + 1
             }
         }
 
-        return hasValidAcHeader
+        return false
     }
 
     // -------------------------------------------------------------------------
@@ -280,10 +409,16 @@ class BleScaleClient(private val context: Context) {
 
             // 模式 1：处于手动配对模式，或尚未记住任何设备
             if (isPairingMode || lastPairedMac.isNullOrEmpty()) {
-                if (isScaleAdvertisement(result)) {
-                    val rawBytes = result.scanRecord?.bytes
-                    val name = device.name ?: result.scanRecord?.deviceName ?: parseNameFromBytes(rawBytes) ?: "体脂秤设备 (${device.address.takeLast(5)})"
-                    val isAdv = MultiScalePacketParser.parseAdvertisement(result.scanRecord) != null
+                val isScale = isScaleAdvertisement(result)
+                val rawBytes = result.scanRecord?.bytes
+                val parsedName = device.name ?: result.scanRecord?.deviceName ?: parseNameFromBytes(rawBytes)
+
+                // 即使设备未匹配严格白名单，只要具备一定信号强度 (RSSI >= -85 dBm) 或者是已知秤，均在配对模式下予以呈现
+                if (isScale || result.rssi >= -85) {
+                    val defaultName = if (isScale) "体脂秤设备 (${device.address.takeLast(5)})" else "蓝牙设备 (${device.address.takeLast(5)})"
+                    val name = parsedName ?: defaultName
+                    val isAdv = MultiScalePacketParser.parseAdvertisement(result.scanRecord, preferredModel) != null
+                    val matchedModel = detectMatchedModel(parsedName, result.scanRecord)
 
                     val currentList = _discoveredScales.value.toMutableList()
                     val existingIndex = currentList.indexOfFirst { it.address.equals(device.address, ignoreCase = true) }
@@ -291,15 +426,33 @@ class BleScaleClient(private val context: Context) {
                         name = name,
                         address = device.address,
                         rssi = result.rssi,
-                        isBroadcastScale = isAdv
+                        isBroadcastScale = isAdv,
+                        isWifiScale = false,
+                        isConfirmedScale = isScale,
+                        matchedModel = matchedModel
                     )
                     if (existingIndex >= 0) {
                         currentList[existingIndex] = item
                     } else {
                         currentList.add(item)
                     }
+                    // 排序规则：
+                    // 1. 若用户指定了型号偏好 (preferredModel != AUTO)，与该型号匹配的设备排在最顶端
+                    // 2. 其次是确认为体脂秤或 Wi-Fi 秤的设备
+                    // 3. 最后按信号强度 (RSSI) 降序排列
+                    currentList.sortWith(
+                        compareByDescending<DiscoveredScaleDevice> {
+                            preferredModel != ScaleModel.AUTO && it.matchedModel == preferredModel
+                        }.thenByDescending {
+                            it.isConfirmedScale || it.isWifiScale
+                        }.thenByDescending {
+                            it.rssi
+                        }
+                    )
                     _discoveredScales.value = currentList
-                    _discoveredDevice.value = Pair(name, device.address)
+                    if (isScale) {
+                        _discoveredDevice.value = Pair(name, device.address)
+                    }
                 }
                 // 【核心保护】：手动配对阶段仅收集设备列表，绝不自动发起连接，等待用户手动点击！
                 return
@@ -317,7 +470,7 @@ class BleScaleClient(private val context: Context) {
                 val name = device.name ?: result.scanRecord?.deviceName ?: parseNameFromBytes(result.scanRecord?.bytes) ?: "体脂秤设备 (${device.address.takeLast(5)})"
 
                 // 尝试直接从广播数据解析（如小米秤、免配对广播秤即踩即读）
-                val advScaleData = MultiScalePacketParser.parseAdvertisement(result.scanRecord)
+                val advScaleData = MultiScalePacketParser.parseAdvertisement(result.scanRecord, preferredModel)
                 if (advScaleData != null) {
                     // Bug #25 修复：只要 parseAdvertisement 返回非 null，就判定为广播秤，统一在此处理。
                     // 原条件 "advScaleData.weightKg > 0.0" 会导致离秤 0kg 包 fall-through 到下方 GATT 连接逻辑，
@@ -328,12 +481,16 @@ class BleScaleClient(private val context: Context) {
                         _isStable.value = validStable
                         if (validStable) {
                             _connectionState.value = ConnectionState.MEASURING
-                        } else if (_connectionState.value != ConnectionState.MEASURING) {
-                            _connectionState.value = ConnectionState.CONNECTED
-                        }
-                        // 仅当体重 >= 3.0kg 时才接收阻抗（人体必须站秤接触电极，禁止空秤接收阻抗）
-                        if (advScaleData.weightKg >= 3.0) {
-                            advScaleData.impedanceOhm?.let { _impedance.value = it }
+                            // 仅当示数锁定且有明确阻抗上报时接收阻抗
+                            if (advScaleData.impedanceOhm != null && advScaleData.impedanceOhm > 0.0 && advScaleData.weightKg >= 3.0) {
+                                _impedance.value = advScaleData.impedanceOhm
+                            }
+                        } else {
+                            if (_connectionState.value != ConnectionState.MEASURING) {
+                                _connectionState.value = ConnectionState.CONNECTED
+                            }
+                            // 实时动态示数阶段强制清零阻抗，杜绝上一轮或爬升中残留
+                            _impedance.value = 0.0
                         }
                     } else {
                         // 广播秤下秤包（weightKg == 0.0）：立即归零体重与稳定状态，切回已连接状态
@@ -367,22 +524,40 @@ class BleScaleClient(private val context: Context) {
                 }
 
                 // 非广播秤（AFU / SIG / OKOK 等需 GATT 双向通信的设备）：建立 GATT 连接
+                // 【核心保护】：若当前已在连接中或已建立连接/测量中，绝不重复发起 GATT 连接，防止多广播包碰撞
+                if (_connectionState.value == ConnectionState.CONNECTING ||
+                    _connectionState.value == ConnectionState.CONNECTED ||
+                    _connectionState.value == ConnectionState.MEASURING) {
+                    return
+                }
                 AppLogger.i(TAG, "已发现已记住的体脂秤，自动连接 GATT: $name [${device.address}]")
                 _discoveredDevice.value = Pair(name, device.address)
-                stopScan()
                 connect(device)
             }
         }
 
         override fun onScanFailed(errorCode: Int) {
             AppLogger.e(TAG, "BLE 扫描失败，错误码: $errorCode")
+            isScanning = false
+            if (errorCode == ScanCallback.SCAN_FAILED_ALREADY_STARTED) {
+                isScanning = true
+                _connectionState.value = ConnectionState.SCANNING
+                return
+            }
             _connectionState.value = ConnectionState.IDLE
-            // 扫描失败后延迟 800ms 自动重试，避免立即重试导致系统限流
-            handler.postDelayed({
-                if (_connectionState.value == ConnectionState.IDLE) {
-                    startScan()
-                }
-            }, 800)
+            if (scanRetryCount < 3) {
+                // 指数退避重试 (2s, 4s, 8s)，避免高频重试导致被系统 BLE 栈永久拉黑
+                val delay = 2000L * (1 shl scanRetryCount)
+                scanRetryCount++
+                AppLogger.w(TAG, "扫描失败，将于 ${delay}ms 后进行第 $scanRetryCount 次重试 (errorCode: $errorCode)")
+                handler.postDelayed({
+                    if (_connectionState.value == ConnectionState.IDLE) {
+                        startScan()
+                    }
+                }, delay)
+            } else {
+                AppLogger.e(TAG, "扫描重试已达上限 (3次)，停止自动重试，请手动触发")
+            }
         }
     }
 
@@ -411,17 +586,31 @@ class BleScaleClient(private val context: Context) {
     }
 
     // -------------------------------------------------------------------------
-    // 内部定时器工具
+    // 内部定时器工具与扫描状态
     // -------------------------------------------------------------------------
 
-    /** GATT 连接超时看门狗 Runnable，5 秒内未完成连接则回退到扫描状态。 */
+    /** 是否正在扫描中 */
+    @Volatile
+    var isScanning: Boolean = false
+        private set
+
+    /** 扫描失败连续重试计数 */
+    private var scanRetryCount = 0
+
+    /** GATT 连接超时看门狗 Runnable，8 秒内未完成连接则回退到扫描状态。 */
     private var connectTimeoutRunnable: Runnable? = null
+
+    /** 待执行的 GATT 连接调度任务（延迟 250ms 防射频冲突） */
+    private var pendingConnectRunnable: Runnable? = null
+
+    /** 单个特征描述符写入超时看门狗 Runnable，2.5 秒内未收到 onDescriptorWrite 则跳过。 */
+    private var descriptorTimeoutRunnable: Runnable? = null
 
     /** 主线程 Handler，用于延迟任务（看门狗定时器、扫描重试等）。 */
     private val handler = android.os.Handler(android.os.Looper.getMainLooper())
 
     // -------------------------------------------------------------------------
-    // 公开方法：蓝牙状态查询
+    // 公开方法：蓝牙与定位状态查询
     // -------------------------------------------------------------------------
 
     /**
@@ -430,6 +619,15 @@ class BleScaleClient(private val context: Context) {
      * @return 蓝牙适配器存在且已启用时返回 true，否则返回 false。
      */
     fun isBluetoothEnabled(): Boolean = bluetoothAdapter?.isEnabled == true
+
+    /**
+     * 检查系统定位服务是否开启 (部分 Android 系统或国产 ROM 需开启定位服务才能扫描 BLE 设备)。
+     */
+    fun isLocationEnabled(): Boolean {
+        val locationManager = context.getSystemService(Context.LOCATION_SERVICE) as? android.location.LocationManager ?: return false
+        return locationManager.isProviderEnabled(android.location.LocationManager.GPS_PROVIDER) ||
+               locationManager.isProviderEnabled(android.location.LocationManager.NETWORK_PROVIDER)
+    }
 
     // -------------------------------------------------------------------------
     // 扫描控制
@@ -452,25 +650,41 @@ class BleScaleClient(private val context: Context) {
         _isStable.value = false
         _impedance.value = 0.0
 
+        // 若当前已在扫描中且连接状态也是 SCANNING，无需重复销毁与重建扫描器，避免触发系统频控
+        if (isScanning && _connectionState.value == ConnectionState.SCANNING) {
+            AppLogger.d(TAG, "BLE 扫描已处于运行状态，无需重复启动")
+            return
+        }
+
+        // 取消任何待发起的 GATT 连接，确保扫描环境干净
+        pendingConnectRunnable?.let { handler.removeCallbacks(it) }
+        pendingConnectRunnable = null
+
         // 【关键保护】：非配对模式下，如果没有记住任何设备，绝不执行盲目扫描和自动连接
         if (!isPairingMode && lastPairedMac.isNullOrEmpty()) {
             AppLogger.i(TAG, "尚未记住任何体脂秤设备，跳过自动连接扫描（请先进行手动配对）")
             _connectionState.value = ConnectionState.IDLE
+            isScanning = false
             return
         }
 
-        val scanner = bluetoothAdapter?.bluetoothLeScanner
+        val adapter = bluetoothAdapter
+        val scanner = adapter?.bluetoothLeScanner
         if (scanner == null) {
             // 记录详细原因：无适配器 / BT 未开启 / Scanner 为 null
-            val reason = if (bluetoothAdapter == null) "No BT Adapter" else if (!bluetoothAdapter.isEnabled) "BT Disabled" else "Scanner Null"
+            val reason = if (adapter == null) "No BT Adapter" else if (!adapter.isEnabled) "BT Disabled" else "Scanner Null"
             AppLogger.e(TAG, "蓝牙扫描器不可用: $reason")
             _connectionState.value = ConnectionState.IDLE
+            isScanning = false
             return
         }
 
-        // Clean up previous connection and watchdog timer
-        // 取消旧的连接超时看门狗，防止误触发
+        // 取消旧的连接超时与描述符超时看门狗，防止误触发
         connectTimeoutRunnable?.let { handler.removeCallbacks(it) }
+        connectTimeoutRunnable = null
+        descriptorTimeoutRunnable?.let { handler.removeCallbacks(it) }
+        descriptorTimeoutRunnable = null
+
         // 关闭旧的 GATT 连接，释放系统蓝牙资源
         try {
             bluetoothGatt?.disconnect()
@@ -481,11 +695,17 @@ class BleScaleClient(private val context: Context) {
         AppLogger.i(TAG, "启动 BLE 扫描 (isPairingMode: $isPairingMode, pairedMac: $lastPairedMac)...")
         _connectionState.value = ConnectionState.SCANNING
 
-        // 构建低延迟扫描参数配置
-        val settings = ScanSettings.Builder()
+        // 构建低延迟与高召回扫描参数配置（针对 MIUI/HyperOS/ColorOS/OriginOS 启用 Aggressive 模式）
+        val settingsBuilder = ScanSettings.Builder()
             .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)  // 最低延迟，最快发现设备
             .setReportDelay(0)                                 // 不批量缓存，立即回调
-            .build()
+
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
+            settingsBuilder.setCallbackType(ScanSettings.CALLBACK_TYPE_ALL_MATCHES)
+            settingsBuilder.setMatchMode(ScanSettings.MATCH_MODE_AGGRESSIVE)
+            settingsBuilder.setNumOfMatches(ScanSettings.MATCH_NUM_MAX_ADVERTISEMENT)
+        }
+        val settings = settingsBuilder.build()
 
         // 先尝试停止旧扫描（防止重复启动导致系统报错）
         try {
@@ -495,7 +715,10 @@ class BleScaleClient(private val context: Context) {
         // 以无过滤器方式启动扫描（由 isScaleAdvertisement 逻辑层过滤）
         try {
             scanner.startScan(null, settings, scanCallback)
+            isScanning = true
+            scanRetryCount = 0
         } catch (e: Exception) {
+            isScanning = false
             AppLogger.e(TAG, "启动 BLE 扫描失败: ${e.message}")
             _connectionState.value = ConnectionState.IDLE
         }
@@ -535,9 +758,14 @@ class BleScaleClient(private val context: Context) {
         onMacDiscovered?.invoke(device.address)
 
         if (device.isBroadcastScale) {
-            // 广播秤（如小米体脂秤）：已记住该 MAC，直接设为已连接并启动针对该已记住 MAC 的自动监听扫描
+            // 广播秤（如小米体脂秤）：已记住该 MAC，直接设为已连接
             _connectionState.value = ConnectionState.CONNECTED
-            startScan()
+            // 延迟 500ms 再启动自动监听扫描，留足时间给上层 UI 捕获 CONNECTED 状态并完成配对保存与导航
+            handler.postDelayed({
+                if (_connectionState.value == ConnectionState.CONNECTED) {
+                    startScan()
+                }
+            }, 500L)
         } else {
             // GATT 秤：发起 GATT 连接
             connect(remoteDevice)
@@ -551,6 +779,9 @@ class BleScaleClient(private val context: Context) {
      * 如果调用时扫描已停止，忽略异常静默处理。
      */
     fun stopScan() {
+        isScanning = false
+        pendingConnectRunnable?.let { handler.removeCallbacks(it) }
+        pendingConnectRunnable = null
         val scanner = bluetoothAdapter?.bluetoothLeScanner ?: return
         try {
             scanner.stopScan(scanCallback)
@@ -570,6 +801,8 @@ class BleScaleClient(private val context: Context) {
      * - 配对模式标记与候选设备列表
      * - 无数据超时定时器（inactivityRunnable）
      * - 连接超时看门狗（connectTimeoutRunnable）
+     * - 待执行连接任务（pendingConnectRunnable）
+     * - 描述符超时看门狗（descriptorTimeoutRunnable）
      * - GATT 连接实例
      * - 已配对 MAC 记录（lastPairedMac）
      * - 已发现设备信息（discoveredDevice）
@@ -578,11 +811,21 @@ class BleScaleClient(private val context: Context) {
     fun disconnectAndReset() {
         AppLogger.i(TAG, "断开连接并重置蓝牙状态")
         isPairingMode = false
+        isScanning = false
+        scanRetryCount = 0
         _discoveredScales.value = emptyList()
         // 取消无数据超时定时器
         inactivityRunnable?.let { handler.removeCallbacks(it) }
-        // 取消 GATT 连接超时看门狗
+        inactivityRunnable = null
+        // 取消待执行的连接任务与看门狗
+        pendingConnectRunnable?.let { handler.removeCallbacks(it) }
+        pendingConnectRunnable = null
         connectTimeoutRunnable?.let { handler.removeCallbacks(it) }
+        connectTimeoutRunnable = null
+        // 取消描述符超时看门狗
+        descriptorTimeoutRunnable?.let { handler.removeCallbacks(it) }
+        descriptorTimeoutRunnable = null
+
         stopScan()
         try {
             bluetoothGatt?.disconnect()
@@ -607,57 +850,72 @@ class BleScaleClient(private val context: Context) {
      * 向指定蓝牙设备发起 GATT 连接。
      *
      * 连接流程：
-     * 1. 停止扫描，避免无线电资源冲突。
-     * 2. 关闭旧 GATT 实例（如有）。
-     * 3. 设置 5 秒连接超时看门狗：若 5 秒内 GATT 未建立则回退到扫描。
-     * 4. 在 Android M+ 上强制使用 LE 传输通道。
+     * 1. 防重入保护：已处于连接中/已连接/测量中时直接忽略。
+     * 2. 立即将状态更新为 CONNECTING，屏蔽后续重复广播包。
+     * 3. 立即调用 stopScan 停止扫描，释放 BLE 射频资源。
+     * 4. 延迟 250ms 后在主线程调度关闭旧 GATT 并调用 connectGatt，彻底杜绝 Status 133 / GATT_ERROR。
+     * 5. 设置 8 秒连接超时看门狗：若 8 秒内 GATT 未建立则回退到扫描。
+     * 6. 在 Android M+ 上强制使用 LE 传输通道。
      *
      * @param device 目标蓝牙设备对象。
      */
     private fun connect(device: BluetoothDevice) {
-        // ALWAYS stop scanning before initiating GATT connection to prevent radio collision
-        // 停止扫描以释放无线电资源，防止扫描与 GATT 连接同时竞争导致连接失败
-        stopScan()
-
-        // 关闭旧的 GATT 连接实例
-        try {
-            bluetoothGatt?.disconnect()
-            bluetoothGatt?.close()
-        } catch (e: Exception) {
-            AppLogger.w(TAG, "关闭旧 GATT 实例异常: ${e.message}")
+        if (_connectionState.value == ConnectionState.CONNECTING ||
+            _connectionState.value == ConnectionState.CONNECTED ||
+            _connectionState.value == ConnectionState.MEASURING) {
+            AppLogger.d(TAG, "当前已处于 ${_connectionState.value} 状态，忽略重复连接请求: ${device.address}")
+            return
         }
-        bluetoothGatt = null
 
+        // 1. 立即停止扫描，避免无线电资源冲突
+        stopScan()
+        // 2. 立即置为 CONNECTING，阻止后续广播包触发多次连接
         _connectionState.value = ConnectionState.CONNECTING
-        AppLogger.i(TAG, "正在连接 GATT: ${device.address}...")
 
-        // Cancel previous connection watchdog
-        // 取消上一次的连接超时看门狗（避免多个定时器同时运行）
-        connectTimeoutRunnable?.let { handler.removeCallbacks(it) }
+        pendingConnectRunnable?.let { handler.removeCallbacks(it) }
+        val connectRunnable = Runnable {
+            if (_connectionState.value != ConnectionState.CONNECTING) return@Runnable
 
-        // 5-second watchdog: if GATT doesn't establish, close GATT & fall back to scan
-        // 设置 5 秒连接超时看门狗：连接超时后自动关闭 GATT 并重新发起扫描
-        val timeoutRunnable = Runnable {
-            if (_connectionState.value == ConnectionState.CONNECTING) {
-                AppLogger.w(TAG, "GATT 连接超时 (5s)，回退并重新启动 LE 扫描...")
-                try {
-                    bluetoothGatt?.disconnect()
-                    bluetoothGatt?.close()
-                } catch (e: Exception) {}
-                bluetoothGatt = null
-                _connectionState.value = ConnectionState.IDLE
-                startScan()  // 回退到扫描，重新发现设备
+            // 关闭旧的 GATT 连接实例
+            try {
+                bluetoothGatt?.disconnect()
+                bluetoothGatt?.close()
+            } catch (e: Exception) {
+                AppLogger.w(TAG, "关闭旧 GATT 实例异常: ${e.message}")
+            }
+            bluetoothGatt = null
+
+            AppLogger.i(TAG, "正在发起 GATT 连接 (延迟 250ms 防射频冲突): ${device.address}...")
+
+            // Cancel previous connection watchdog
+            connectTimeoutRunnable?.let { handler.removeCallbacks(it) }
+
+            // 8-second watchdog: if GATT doesn't establish, close GATT & fall back to scan
+            val timeoutRunnable = Runnable {
+                if (_connectionState.value == ConnectionState.CONNECTING) {
+                    AppLogger.w(TAG, "GATT 连接超时 (8s)，回退并重新启动 LE 扫描...")
+                    try {
+                        bluetoothGatt?.disconnect()
+                        bluetoothGatt?.close()
+                    } catch (e: Exception) {}
+                    bluetoothGatt = null
+                    _connectionState.value = ConnectionState.IDLE
+                    startScan()  // 回退到扫描，重新发现设备
+                }
+            }
+            connectTimeoutRunnable = timeoutRunnable
+            handler.postDelayed(timeoutRunnable, 8000L)  // 8000ms = 8秒超时
+
+            // 发起 GATT 连接；Android M（API 23）及以上强制指定 LE 传输通道以提高稳定性
+            bluetoothGatt = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
+                device.connectGatt(context, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
+            } else {
+                device.connectGatt(context, false, gattCallback)
             }
         }
-        connectTimeoutRunnable = timeoutRunnable
-        handler.postDelayed(timeoutRunnable, 5000)  // 5000ms = 5秒超时
-
-        // 发起 GATT 连接；Android M（API 23）及以上强制指定 LE 传输通道以提高稳定性
-        bluetoothGatt = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
-            device.connectGatt(context, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
-        } else {
-            device.connectGatt(context, false, gattCallback)
-        }
+        pendingConnectRunnable = connectRunnable
+        // 留出 250ms 给系统蓝牙芯片完全停止 LE 扫描状态，彻底规避 Status 133 冲突
+        handler.postDelayed(connectRunnable, 250L)
     }
 
     // -------------------------------------------------------------------------
@@ -686,22 +944,39 @@ class BleScaleClient(private val context: Context) {
     private fun sendHandshake(gatt: BluetoothGatt) {
         for (service in gatt.services) {
             val sUuid = service.uuid.toString().uppercase()
-            // 跳过标准服务（GAP = 1800, GATT = 1801, WSS = 181D, BCS = 181B, DIS = 180A），只向私有业务服务发握手
-            if (sUuid.startsWith("00001800") || sUuid.startsWith("00001801") ||
-                sUuid.startsWith("0000181D") || sUuid.startsWith("0000181B") ||
-                sUuid.startsWith("0000180A")) continue
+            // 仅对 AFU 私有服务 (0xFFB0) 发送 AFU 私有协议握手包，
+            // 严禁向 OKOK、SIG 标准或其它未知厂商特征发送，以防远端 MCU 异常或断连
+            val isAfuService = sUuid.contains("FFB0") || sUuid.contains("0000FFB0")
+            if (!isAfuService) continue
+
+            // 仅当用户明确将偏好型号手动设置为“薄荷健康/沃莱(非AFU)”时才跳过；
+            // 只要设备包含 0xFFB0 服务（AFU 专属服务），哪怕设备名称带有 QN- 或 Yolanda，也必须发送握手包激活 MCU！
+            if (preferredModel == ScaleModel.BOOHEE_YOLANDA) {
+                AppLogger.d(TAG, "当前偏好型号指定为薄荷健康/沃莱非AFU协议，跳过 AFU 握手包")
+                continue
+            }
+
             for (char in service.characteristics) {
                 val props = char.properties
-                // 只向支持 WRITE 或 WRITE_NO_RESPONSE 的特征发送握手
-                if (props and BluetoothGattCharacteristic.PROPERTY_WRITE != 0 ||
-                    props and BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE != 0) {
+                val cUuid = char.uuid.toString().uppercase()
+                val isAfuWrite = cUuid.contains("FFB1") || cUuid.contains("0000FFB1")
+                // 只向支持 WRITE 或 WRITE_NO_RESPONSE 的 AFU 写入特征发送握手
+                if (isAfuWrite && (props and BluetoothGattCharacteristic.PROPERTY_WRITE != 0 ||
+                    props and BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE != 0)) {
 
                     val handshakeData = byteArrayOf(0xFD.toByte(), 0x37, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x37)
                     val handshakeHex = handshakeData.joinToString(" ") { "%02X".format(it) }
                     AppLogger.i(TAG, "向 ${char.uuid} 发送握手数据包: $handshakeHex")
+                    val writeType = if (props and BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE != 0 &&
+                        props and BluetoothGattCharacteristic.PROPERTY_WRITE == 0) {
+                        BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+                    } else {
+                        BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
+                    }
+                    char.writeType = writeType
                     // 根据 Android API 版本选择写入方式
                     if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
-                        gatt.writeCharacteristic(char, handshakeData, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT)
+                        gatt.writeCharacteristic(char, handshakeData, writeType)
                     } else {
                         @Suppress("DEPRECATION")
                         char.value = handshakeData
@@ -730,11 +1005,20 @@ class BleScaleClient(private val context: Context) {
      * @param gatt 当前 GATT 连接实例。
      */
     private fun subscribeNextCharacteristic(gatt: BluetoothGatt) {
+        // 取消前一个特征的描述符超时看门狗
+        descriptorTimeoutRunnable?.let { handler.removeCallbacks(it) }
+        descriptorTimeoutRunnable = null
+
         // 所有特征均已订阅完毕
         if (pendingSubscribeIndex >= pendingSubscribeList.size) {
             AppLogger.i(TAG, "所有特征通知已成功订阅，准备发送握手包")
-            // 发送握手包激活体脂秤数据推送
-            sendHandshake(gatt)
+            // 服务发现及全部特征订阅顺利完成，取消看门狗
+            connectTimeoutRunnable?.let { handler.removeCallbacks(it) }
+            connectTimeoutRunnable = null
+            // 稍作微小延迟 150ms 确保 BLE 描述符写入事务完全完成，再执行握手写入
+            handler.postDelayed({
+                sendHandshake(gatt)
+            }, 150L)
             _connectionState.value = ConnectionState.CONNECTED
             return
         }
@@ -755,6 +1039,15 @@ class BleScaleClient(private val context: Context) {
             } else {
                 BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE  // 通知：无需确认
             }
+
+            // 单个描述符写入设置 2.5s 超时看门狗，防止个别体脂秤丢弃回调导致整个订阅链路永久死锁
+            val dTimeout = Runnable {
+                AppLogger.w(TAG, "描述符写入超时 (2.5s) [${characteristic.uuid}], 跳过并尝试下一个特征")
+                subscribeNextCharacteristic(gatt)
+            }
+            descriptorTimeoutRunnable = dTimeout
+            handler.postDelayed(dTimeout, 2500L)
+
             // Android 13+（API 33）使用新版 writeDescriptor API，旧版本降级使用已废弃方式
             val success = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
                 gatt.writeDescriptor(descriptor, cccdValue) == android.bluetooth.BluetoothStatusCodes.SUCCESS
@@ -766,7 +1059,9 @@ class BleScaleClient(private val context: Context) {
             }
             AppLogger.d(TAG, "writeDescriptor 结果 [${characteristic.uuid}]: $success")
             if (!success) {
-                // writeDescriptor 立即失败时（无需等待回调），直接处理下一个
+                // writeDescriptor 立即失败时（无需等待回调），取消定时器并直接处理下一个
+                descriptorTimeoutRunnable?.let { handler.removeCallbacks(it) }
+                descriptorTimeoutRunnable = null
                 subscribeNextCharacteristic(gatt)
             }
             // 成功发起写入后等待 onDescriptorWrite 回调，再继续下一个
@@ -803,7 +1098,7 @@ class BleScaleClient(private val context: Context) {
     private fun handleIncomingData(data: ByteArray, charUuid: String) {
         // 将原始数据格式化为十六进制字符串打印，记录原始蓝牙数据
         val hexStr = data.joinToString(" ") { "%02X".format(it) }
-        val scaleResult = MultiScalePacketParser.parseNotification(data, charUuid)
+        val scaleResult = MultiScalePacketParser.parseNotification(data, charUuid, preferredModel)
 
         val parsedDetails = buildString {
             if (scaleResult != null) {
@@ -832,23 +1127,29 @@ class BleScaleClient(private val context: Context) {
 
         // 更新测量结果
         scaleResult?.let { result ->
-            _weight.value = result.weightKg
             if (result.weightKg > 0.0) {
+                _weight.value = result.weightKg
                 // 只有当体重 >= 3.0kg 时才判定为有效稳定锁定（防止单脚踩秤或轻微压秤时的误锁定）
                 val validStable = result.isStable && (result.weightKg >= 3.0)
                 _isStable.value = validStable
                 if (validStable) {
                     // 体重稳定锁定后切换到测量状态，通知 UI 开始体成分计算
                     _connectionState.value = ConnectionState.MEASURING
+                } else {
+                    // 体重处于实时动态变动中（未锁定）：
+                    // 彻底清零阻抗，杜绝上一轮称重遗留或动态爬升中的杂质阻抗残留！
+                    _impedance.value = 0.0
                 }
             } else if (result.weightKg <= 0.0 && result.impedanceOhm == null) {
-                // 仅当体重为 0 且无阻抗数据时，才清除稳定标志和阻抗，并立即切回已连接状态
+                // 仅当体重为 0 且无阻抗数据时（下秤离秤包），才归零体重与稳定标志
+                _weight.value = 0.0
                 _isStable.value = false
                 _impedance.value = 0.0
                 if (_connectionState.value == ConnectionState.MEASURING) {
                     _connectionState.value = ConnectionState.CONNECTED
                 }
             }
+            // 阻抗专属数据包（result.weightKg <= 0.0 && result.impedanceOhm != null）：绝不归零体重，保留已锁定的 _weight.value
 
             result.impedanceOhm?.let { imp ->
                 // 人体生物电阻抗（BIA）必须基于真实人体踩秤（体重 >= 3.0kg）才能测得，空秤时禁止接收阻抗
@@ -872,58 +1173,70 @@ class BleScaleClient(private val context: Context) {
          * GATT 连接状态变化回调。
          *
          * 处理逻辑：
-         * - status != GATT_SUCCESS：连接失败，关闭 GATT 并回退到扫描。
-         * - newState == STATE_CONNECTED：成功建立物理连接，
-         *   立即请求高优先级连接参数并发起服务发现。
-         * - newState == STATE_DISCONNECTED：设备断开，清理资源并重置状态。
+         * 1. 取消正在等待的连接看门狗与调度任务。
+         * 2. STATE_CONNECTED && GATT_SUCCESS：
+         *    - 物理链路建立成功，重置重试计数器 gattRetryCount = 0。
+         *    - 请求高优先级连接参数，延迟 300ms 发起 discoverServices()。
+         * 3. STATE_DISCONNECTED：
+         *    - 关闭当前 GATT 实例，释放底层 Binder 与 Client 句柄。
+         *    - 重置测量数据（体重、稳定状态、阻抗）。
+         *    - 区分两种断开场景：
+         *      A. 正常完成称重后的秤端休眠断开（此前处于 CONNECTED 或 MEASURING）：
+         *         - 重置 gattRetryCount = 0，非故障。
+         *         - 延时 800ms 重新恢复扫描，以便用户下次踩秤时即踩即连。
+         *      B. 连接建立阶段失败（此前处于 CONNECTING，如 Status 133 / 超时等）：
+         *         - 执行指数退避重试（最长 8s）。
+         *         - 达到最大重试后不永久停止，冷却 5s 后重置并恢复扫描，避免秤被重新唤醒时无法连接。
+         * 4. 其他异常状态：关闭 GATT，并在 1s 后恢复扫描。
          *
          * @param gatt     GATT 客户端实例。
          * @param status   操作结果状态码（[BluetoothGatt.GATT_SUCCESS] 为成功）。
          * @param newState 新的连接状态（[BluetoothProfile.STATE_CONNECTED] 或 [BluetoothProfile.STATE_DISCONNECTED]）。
          */
         override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
-            AppLogger.i(TAG, "GATT 连接状态变更: status=$status, newState=$newState")
-            // 连接事件发生，取消超时看门狗
+            AppLogger.i(TAG, "GATT 连接状态变更: status=$status, newState=$newState, currentConnectionState=${_connectionState.value}")
+            // 连接事件发生，取消超时看门狗与延时任务
             connectTimeoutRunnable?.let { handler.removeCallbacks(it) }
+            connectTimeoutRunnable = null
+            pendingConnectRunnable?.let { handler.removeCallbacks(it) }
+            pendingConnectRunnable = null
 
-            if (status != BluetoothGatt.GATT_SUCCESS) {
-                // GATT 操作失败（如被远端断开、连接超时等）
-                AppLogger.e(TAG, "GATT 连接失败 (status=$status)，当前重试次数: $gattRetryCount / $MAX_GATT_RETRY")
-                _connectionState.value = ConnectionState.IDLE
-                try {
-                    gatt.close()
-                } catch (e: Exception) {}
-                if (bluetoothGatt == gatt) {
-                    bluetoothGatt = null
-                }
-                if (gattRetryCount < MAX_GATT_RETRY) {
-                    // 指数退避：每次失败延迟加倍（1s, 2s, 4s, 8s, 16s），最长 30s
-                    val delayMs = (1000L * (1 shl gattRetryCount)).coerceAtMost(30_000L)
-                    gattRetryCount++
-                    AppLogger.w(TAG, "将在 ${delayMs}ms 后自动重连（第 $gattRetryCount 次）")
-                    handler.postDelayed({ startScan() }, delayMs)
-                } else {
-                    // 超出最大重试次数：停止自动重连，让用户手动操作
-                    gattRetryCount = 0
-                    AppLogger.e(TAG, "已达最大重试次数 ($MAX_GATT_RETRY)，停止自动重连，请手动重试")
-                }
-                return
-            }
-
-            if (newState == BluetoothProfile.STATE_CONNECTED) {
+            if (newState == BluetoothProfile.STATE_CONNECTED && status == BluetoothGatt.GATT_SUCCESS) {
                 // 物理连接建立成功，重置重试计数器
                 gattRetryCount = 0
                 _connectionState.value = ConnectionState.CONNECTING
-                gatt.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH)
-                // 发起 GATT 服务发现，触发 onServicesDiscovered 回调
-                gatt.discoverServices()
+                // 为服务发现和特征订阅设置超时看门狗（10秒），防止 discoverServices() 挂起无响应
+                val discoveryTimeout = Runnable {
+                    if (_connectionState.value == ConnectionState.CONNECTING) {
+                        AppLogger.w(TAG, "GATT 服务发现或特征订阅超时(10s)，主动断开重连")
+                        try {
+                            gatt.disconnect()
+                            gatt.close()
+                        } catch (e: Exception) {}
+                        if (bluetoothGatt == gatt) {
+                            bluetoothGatt = null
+                        }
+                        _connectionState.value = ConnectionState.IDLE
+                        startScan()
+                    }
+                }
+                connectTimeoutRunnable = discoveryTimeout
+                handler.postDelayed(discoveryTimeout, 10000L)
+
+                // 请求高优先级连接参数
+                handler.post {
+                    gatt.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH)
+                }
+
+                // 延迟 300ms 再发起服务发现，防止与连接参数协商在链路层产生报文碰撞
+                handler.postDelayed({
+                    if (_connectionState.value == ConnectionState.CONNECTING && bluetoothGatt == gatt) {
+                        AppLogger.i(TAG, "发起 GATT discoverServices()")
+                        gatt.discoverServices()
+                    }
+                }, 300L)
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
-                // 设备断开连接，清理全部资源和状态
-                AppLogger.i(TAG, "设备已断开连接")
-                _connectionState.value = ConnectionState.IDLE
-                _weight.value = 0.0
-                _isStable.value = false
-                _impedance.value = 0.0
+                // 收到断开事件，必须先彻底关闭当前 GATT 客户端实例释放底层 Binder / Client 句柄
                 try {
                     gatt.close()
                 } catch (e: Exception) {
@@ -932,13 +1245,72 @@ class BleScaleClient(private val context: Context) {
                 if (bluetoothGatt == gatt) {
                     bluetoothGatt = null
                 }
+                pendingSubscribeList.clear()
+                pendingSubscribeIndex = 0
+
+                // 区分是"正常测量完成后的设备休眠断开"还是"连接发起阶段的握手失败"
+                val wasPreviouslyConnected = _connectionState.value == ConnectionState.CONNECTED ||
+                                            _connectionState.value == ConnectionState.MEASURING
+
+                _connectionState.value = ConnectionState.IDLE
+                _weight.value = 0.0
+                _isStable.value = false
+                _impedance.value = 0.0
+
+                if (wasPreviouslyConnected) {
+                    // 场景 1：设备已完成称重，秤端自动休眠断开（常见 status: 19 远端用户终止、8 超时等）
+                    // 此为体脂秤标准节能行为，绝对不是连接故障！立即重置重试计数，并恢复扫描等待下次上秤
+                    gattRetryCount = 0
+                    AppLogger.i(TAG, "体脂秤已正常休眠/断开 (status=$status)，重置测量状态，延时恢复扫描等待下次上秤...")
+                    if (!isPairingMode && !lastPairedMac.isNullOrEmpty()) {
+                        handler.postDelayed({
+                            if (!isPairingMode && !lastPairedMac.isNullOrEmpty() && _connectionState.value == ConnectionState.IDLE) {
+                                AppLogger.i(TAG, "秤休眠后延时恢复扫描成功，就绪等待下次上秤")
+                                startScan()
+                            }
+                        }, 800L)
+                    }
+                } else {
+                    // 场景 2：在 CONNECTING 阶段连接失败（如 Status 133、超时或秤刚唤醒就断开）
+                    AppLogger.w(TAG, "GATT 连接建立失败 (status=$status)，当前重试次数: $gattRetryCount / $MAX_GATT_RETRY")
+                    if (!isPairingMode && !lastPairedMac.isNullOrEmpty()) {
+                        if (gattRetryCount < MAX_GATT_RETRY) {
+                            val delayMs = (1000L * (1 shl gattRetryCount)).coerceAtMost(8000L)
+                            gattRetryCount++
+                            AppLogger.w(TAG, "将在 ${delayMs}ms 后恢复扫描以重连目标秤（第 $gattRetryCount 次）")
+                            handler.postDelayed({
+                                if (!isPairingMode && !lastPairedMac.isNullOrEmpty() && _connectionState.value == ConnectionState.IDLE) {
+                                    startScan()
+                                }
+                            }, delayMs)
+                        } else {
+                            // 达到最大重试后不永久停止，冷却 5 秒后重置重试计数并继续恢复扫描，保证秤重新踩亮时能连上
+                            gattRetryCount = 0
+                            AppLogger.w(TAG, "GATT 连接连续失败已达 $MAX_GATT_RETRY 次，冷却 5s 后重置并恢复扫描...")
+                            handler.postDelayed({
+                                if (!isPairingMode && !lastPairedMac.isNullOrEmpty() && _connectionState.value == ConnectionState.IDLE) {
+                                    startScan()
+                                }
+                            }, 5000L)
+                        }
+                    }
+                }
+            } else if (status != BluetoothGatt.GATT_SUCCESS) {
+                // 其他异常状态（如未处于 STATE_DISCONNECTED 却收到 status != 0）
+                AppLogger.w(TAG, "GATT 出现异常状态 status=$status, newState=$newState，关闭连接")
+                try {
+                    gatt.close()
+                } catch (e: Exception) {}
+                if (bluetoothGatt == gatt) {
+                    bluetoothGatt = null
+                }
+                _connectionState.value = ConnectionState.IDLE
                 if (!isPairingMode && !lastPairedMac.isNullOrEmpty()) {
-                    AppLogger.i(TAG, "设备断开后自动恢复扫描以等待下次上秤...")
                     handler.postDelayed({
                         if (!isPairingMode && !lastPairedMac.isNullOrEmpty() && _connectionState.value == ConnectionState.IDLE) {
                             startScan()
                         }
-                    }, 1200)
+                    }, 1000L)
                 }
             }
         }
@@ -946,7 +1318,7 @@ class BleScaleClient(private val context: Context) {
         /**
          * GATT 服务发现完成回调。
          *
-         * 成功后遍历所有非系统服务（过滤 GAP/GATT 通用服务），
+         * 成功后遍历所有非系统服务（过滤 GAP/GATT 通用服务及非秤标准服务），
          * 收集所有支持 Notify 或 Indicate 的特征加入待订阅队列，
          * 然后调用 [subscribeNextCharacteristic] 开始串行订阅流程。
          *
@@ -960,12 +1332,16 @@ class BleScaleClient(private val context: Context) {
                 pendingSubscribeList.clear()
                 pendingSubscribeIndex = 0
 
-                // Search ALL services for Notify/Indicate characteristics
                 // 遍历所有 GATT 服务，收集可订阅的特征
                 for (service in gatt.services) {
                     val sUuid = service.uuid.toString().uppercase()
-                    // 跳过 GAP（0x1800）和 GATT（0x1801）通用服务，只关注业务服务
-                    if (sUuid.startsWith("00001800") || sUuid.startsWith("00001801")) continue
+                    // 跳过 GAP（0x1800）、GATT（0x1801）、设备信息（0x180A）、电池（0x180F）、时间（0x1805）等通用系统服务
+                    val isSystemOrIgnored = sUuid.startsWith("00001800") ||
+                                           sUuid.startsWith("00001801") ||
+                                           sUuid.startsWith("0000180A") ||
+                                           sUuid.startsWith("0000180F") ||
+                                           sUuid.startsWith("00001805")
+                    if (isSystemOrIgnored) continue
 
                     for (char in service.characteristics) {
                         val props = char.properties
@@ -977,7 +1353,7 @@ class BleScaleClient(private val context: Context) {
                     }
                 }
 
-                AppLogger.i(TAG, "共找到 ${pendingSubscribeList.size} 个通知特征")
+                AppLogger.i(TAG, "共找到 ${pendingSubscribeList.size} 个有效通知特征")
                 // 开始串行订阅流程（第一个特征）
                 subscribeNextCharacteristic(gatt)
             }
@@ -999,6 +1375,9 @@ class BleScaleClient(private val context: Context) {
             status: Int
         ) {
             AppLogger.d(TAG, "描述符写入完成: status=$status, 特征: ${descriptor.characteristic?.uuid}")
+            // 收到写入回调，取消该特征的超时定时器
+            descriptorTimeoutRunnable?.let { handler.removeCallbacks(it) }
+            descriptorTimeoutRunnable = null
             // 无论成功或失败，继续订阅队列中的下一个特征
             subscribeNextCharacteristic(gatt)
         }

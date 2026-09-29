@@ -17,6 +17,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -42,6 +43,7 @@ fun DashboardContent(
     onNavigateToPairing: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
+    val context = LocalContext.current
     var showMemberSelectDialog by remember { mutableStateOf(false) }
     var hasAutoPromptedForMeasId by remember { mutableStateOf<String?>(null) }
 
@@ -129,7 +131,8 @@ fun DashboardContent(
             ConnectionStatusChip(
                 state = uiState.connection,
                 deviceName = uiState.pairedDeviceName ?: uiState.discoveredDeviceName,
-                isDeviceRemembered = uiState.isDeviceRemembered
+                isDeviceRemembered = uiState.isDeviceRemembered,
+                isBluetoothEnabled = uiState.isBluetoothEnabled
             )
 
             Spacer(modifier = Modifier.height(16.dp))
@@ -199,6 +202,50 @@ fun DashboardContent(
                         }
                     }
                 }
+            } else if (!uiState.isBluetoothEnabled) {
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 4.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.35f)
+                    ),
+                    shape = MaterialTheme.shapes.large
+                ) {
+                    Column(
+                        modifier = Modifier.padding(20.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Text(
+                            "手机蓝牙已关闭",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            "需要开启手机蓝牙以连接已绑定的体脂秤并接收体重数据。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            textAlign = TextAlign.Center
+                        )
+                        Spacer(modifier = Modifier.height(16.dp))
+                        Button(
+                            onClick = {
+                                val intent = android.content.Intent(android.bluetooth.BluetoothAdapter.ACTION_REQUEST_ENABLE)
+                                context.startActivity(intent)
+                            },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = MaterialTheme.colorScheme.error
+                            ),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Icon(Icons.Default.Bluetooth, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("开启手机蓝牙")
+                        }
+                    }
+                }
             } else {
                 if (uiState.connection == BleScaleClient.ConnectionState.IDLE) {
                     FilledTonalButton(
@@ -211,16 +258,39 @@ fun DashboardContent(
                         Text("开始称重", fontSize = 18.sp, fontWeight = FontWeight.Bold)
                     }
                 } else if (uiState.connection == BleScaleClient.ConnectionState.SCANNING) {
-                    LinearProgressIndicator(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(CircleShape)
-                    )
-                    Text(
-                        "正在自动寻找已记住的设备 (${uiState.pairedDeviceName ?: uiState.pairedDeviceMac ?: "体脂秤"})...",
-                        modifier = Modifier.padding(top = 8.dp),
-                        style = MaterialTheme.typography.bodySmall
-                    )
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        LinearProgressIndicator(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(CircleShape)
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.Center
+                        ) {
+                            Text(
+                                "正在寻找已绑定的设备 (${uiState.pairedDeviceName ?: uiState.pairedDeviceMac ?: "体脂秤"})...",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            IconButton(
+                                onClick = onStartScan,
+                                modifier = Modifier.size(24.dp)
+                            ) {
+                                Icon(
+                                    Icons.Default.Refresh,
+                                    contentDescription = "重新扫描",
+                                    modifier = Modifier.size(16.dp),
+                                    tint = MaterialTheme.colorScheme.primary
+                                )
+                            }
+                        }
+                    }
                 }
             }
 
@@ -258,8 +328,35 @@ fun DashboardContent(
 fun ConnectionStatusChip(
     state: BleScaleClient.ConnectionState,
     deviceName: String? = null,
-    isDeviceRemembered: Boolean = true
+    isDeviceRemembered: Boolean = true,
+    isBluetoothEnabled: Boolean = true
 ) {
+    if (!isBluetoothEnabled) {
+        Surface(
+            color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.25f),
+            shape = CircleShape,
+            border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.35f))
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(8.dp)
+                        .background(MaterialTheme.colorScheme.error, CircleShape)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = "手机蓝牙已关闭",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.error
+                )
+            }
+        }
+        return
+    }
+
     if (!isDeviceRemembered) {
         Surface(
             color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.25f),
@@ -640,11 +737,14 @@ fun DashboardScreen(
 ) {
     val uiState by viewModel.uiState.collectAsState()
 
-    // 仅当已有记住的设备时，才在进入主页时自动尝试连接该设备。
-    // Bug #24 修复：同时监听 connection 状态，确保从后台切回时连接已断（IDLE）也能重新触发扫描，
-    // 而不是仅在 isDeviceRemembered 首次从 false->true 时触发一次（冷启动后 key 不再变化导致漏触发）。
-    LaunchedEffect(uiState.isDeviceRemembered, uiState.connection) {
-        if (uiState.isDeviceRemembered && uiState.connection == BleScaleClient.ConnectionState.IDLE) {
+    LaunchedEffect(Unit) {
+        viewModel.checkBluetoothAndLocationState()
+    }
+
+    // 仅当已有记住的设备且系统蓝牙已开启时，才在进入主页或蓝牙状态恢复时自动触发扫描。
+    // 去除 uiState.connection 监听键，避免断开重连过渡期死循环触发或清除最新测量卡片
+    LaunchedEffect(uiState.isDeviceRemembered, uiState.isBluetoothEnabled) {
+        if (uiState.isDeviceRemembered && uiState.connection == BleScaleClient.ConnectionState.IDLE && uiState.isBluetoothEnabled) {
             viewModel.startScanning()
         }
     }

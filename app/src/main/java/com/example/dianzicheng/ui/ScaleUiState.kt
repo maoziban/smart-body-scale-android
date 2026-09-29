@@ -3,6 +3,7 @@ package com.example.dianzicheng.ui
 import com.example.dianzicheng.data.ble.BleScaleClient
 import com.example.dianzicheng.domain.BodyMeasurement
 import com.example.dianzicheng.domain.FamilyMember
+import com.example.dianzicheng.domain.ScaleModel
 
 /**
  * 称重主界面的 UI 状态数据类（不可变快照）。
@@ -22,6 +23,7 @@ import com.example.dianzicheng.domain.FamilyMember
  * @param debugMessage       调试消息（暂未使用，预留扩展）
  * @param discoveredDeviceName 扫描发现的设备名称（用于配对引导页展示）
  * @param discoveredDeviceMac  扫描发现的设备 MAC 地址（用于后续直连）
+ * @param selectedScaleModel 用户手动选择的体脂秤型号（默认 AUTO 全品牌自动识别）
  */
 data class ScaleUiState(
     val connection: BleScaleClient.ConnectionState = BleScaleClient.ConnectionState.IDLE,
@@ -38,5 +40,8 @@ data class ScaleUiState(
     val pairedDeviceMac: String? = null,
     val pairedDeviceName: String? = null,
     val isDeviceRemembered: Boolean = false,
-    val discoveredScales: List<BleScaleClient.DiscoveredScaleDevice> = emptyList()
+    val discoveredScales: List<BleScaleClient.DiscoveredScaleDevice> = emptyList(),
+    val isBluetoothEnabled: Boolean = true,
+    val isLocationEnabled: Boolean = true,
+    val selectedScaleModel: ScaleModel = ScaleModel.AUTO
 )

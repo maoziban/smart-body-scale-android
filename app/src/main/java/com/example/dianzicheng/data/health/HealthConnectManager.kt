@@ -108,38 +108,64 @@ class HealthConnectManager(private val context: Context) {
         return try {
             val instant = Instant.ofEpochMilli(measurement.measuredAtEpochMs)
             val zoneOffset = ZoneOffset.systemDefault().rules.getOffset(instant)
-            val window = TimeRangeFilter.between(instant.minusMillis(1000), instant.plusMillis(1000))
 
-            val weightResponse = client.readRecords(
-                ReadRecordsRequest(recordType = WeightRecord::class, timeRangeFilter = window)
-            )
-            val weightIds = weightResponse.records
-                .filter { it.time == instant && it.zoneOffset == zoneOffset }
-                .map { it.metadata.id }
-                .toList()
-            val clientWeightIds = if (weightIds.isEmpty() && measurement.id.isNotBlank()) listOf("weight_${measurement.id}") else emptyList()
-            if (weightIds.isNotEmpty() || clientWeightIds.isNotEmpty()) {
-                client.deleteRecords(
-                    recordType = WeightRecord::class,
-                    recordIdsList = weightIds,
-                    clientRecordIdsList = clientWeightIds
-                )
+            // 1. 如果有本地 ID，优先直接使用 clientRecordId 删除（无需 READ 权限，快速且可靠）
+            if (measurement.id.isNotBlank()) {
+                try {
+                    client.deleteRecords(
+                        recordType = WeightRecord::class,
+                        recordIdsList = emptyList(),
+                        clientRecordIdsList = listOf("weight_${measurement.id}")
+                    )
+                } catch (e: Exception) {
+                    Log.w("HealthConnectManager", "deleteRecords by clientRecordId weight failed", e)
+                }
+                try {
+                    client.deleteRecords(
+                        recordType = BodyFatRecord::class,
+                        recordIdsList = emptyList(),
+                        clientRecordIdsList = listOf("fat_${measurement.id}")
+                    )
+                } catch (e: Exception) {
+                    Log.w("HealthConnectManager", "deleteRecords by clientRecordId fat failed", e)
+                }
             }
 
-            val fatResponse = client.readRecords(
-                ReadRecordsRequest(recordType = BodyFatRecord::class, timeRangeFilter = window)
-            )
-            val fatIds = fatResponse.records
-                .filter { it.time == instant && it.zoneOffset == zoneOffset }
-                .map { it.metadata.id }
-                .toList()
-            val clientFatIds = if (fatIds.isEmpty() && measurement.id.isNotBlank()) listOf("fat_${measurement.id}") else emptyList()
-            if (fatIds.isNotEmpty() || clientFatIds.isNotEmpty()) {
-                client.deleteRecords(
-                    recordType = BodyFatRecord::class,
-                    recordIdsList = fatIds,
-                    clientRecordIdsList = clientFatIds
+            // 2. 兜底：若具备读权限，通过时间戳匹配清理可能无 clientRecordId 的历史记录
+            try {
+                val window = TimeRangeFilter.between(instant.minusMillis(1000), instant.plusMillis(1000))
+                val weightResponse = client.readRecords(
+                    ReadRecordsRequest(recordType = WeightRecord::class, timeRangeFilter = window)
                 )
+                val weightIds = weightResponse.records
+                    .filter { it.time == instant && it.zoneOffset == zoneOffset }
+                    .map { it.metadata.id }
+                    .toList()
+                if (weightIds.isNotEmpty()) {
+                    client.deleteRecords(
+                        recordType = WeightRecord::class,
+                        recordIdsList = weightIds,
+                        clientRecordIdsList = emptyList()
+                    )
+                }
+
+                val fatResponse = client.readRecords(
+                    ReadRecordsRequest(recordType = BodyFatRecord::class, timeRangeFilter = window)
+                )
+                val fatIds = fatResponse.records
+                    .filter { it.time == instant && it.zoneOffset == zoneOffset }
+                    .map { it.metadata.id }
+                    .toList()
+                if (fatIds.isNotEmpty()) {
+                    client.deleteRecords(
+                        recordType = BodyFatRecord::class,
+                        recordIdsList = fatIds,
+                        clientRecordIdsList = emptyList()
+                    )
+                }
+            } catch (e: Exception) {
+                // 无读权限或时间查询失败，跳过时间戳兜底
+                Log.d("HealthConnectManager", "Timestamp-based cleanup skipped: ${e.message}")
             }
 
             Log.d("HealthConnectManager", "Deleted weight and fat records from Health Connect")
@@ -263,7 +289,20 @@ class HealthConnectManager(private val context: Context) {
             intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             context.startActivity(intent)
         } catch (e: Exception) {
-            Log.e("HealthConnectManager", "Cannot open Health Connect settings", e)
+            Log.w("HealthConnectManager", "Cannot open ACTION_HEALTH_CONNECT_SETTINGS, trying fallback", e)
+            try {
+                val fallbackIntent = Intent(Intent.ACTION_VIEW, Uri.parse("market://details?id=com.google.android.apps.healthdata"))
+                fallbackIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                context.startActivity(fallbackIntent)
+            } catch (e2: Exception) {
+                try {
+                    val webIntent = Intent(Intent.ACTION_VIEW, Uri.parse("https://play.google.com/store/apps/details?id=com.google.android.apps.healthdata"))
+                    webIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    context.startActivity(webIntent)
+                } catch (e3: Exception) {
+                    Log.e("HealthConnectManager", "Cannot open Health Connect settings or play store", e3)
+                }
+            }
         }
     }
 }
