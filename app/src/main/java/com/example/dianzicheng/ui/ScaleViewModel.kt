@@ -289,12 +289,12 @@ class ScaleViewModel(
                     sessionInterrupted = true
                     stepOnTimeMs = 0L
                     lastWeightZeroMs = System.currentTimeMillis()
-                    // 阻抗可能延迟到达：保留 lastLockedSessionId 1 秒补写窗口，
+                    // 阻抗可能延迟到达：保留 lastLockedSessionId 3 秒补写窗口，
                     // 之后清除，防止上一人的阻抗被误写入下一人的会话
                     val sessionIdToClear = lastLockedSessionId
                     if (sessionIdToClear != null) {
                         viewModelScope.launch {
-                            delay(1000)
+                            delay(3000)
                             if (lastLockedSessionId == sessionIdToClear) {
                                 lastLockedSessionId = null
                             }
@@ -356,12 +356,12 @@ class ScaleViewModel(
                 } else {
                     // 体重不稳定：UI 上的阻抗立即归零，防止动态变动时残留上一轮阻抗
                     _uiState.update { it.copy(isStable = false, impedanceOhm = 0.0) }
-                    // 延迟 300ms 后清空 activeSessionId，
-                    // 给可能延迟到达的阻抗数据留出补充写入的窗口期。
+                    // 延迟 2000ms 后清空 activeSessionId，
+                    // 给秤端锁定后测算 BIA 阻抗留出充分的计算与通知写入窗口期。
                     // 使用受管协程句柄，避免新稳定事件被先前的延迟任务误销毁。
                     clearSessionJob?.cancel()
                     clearSessionJob = viewModelScope.launch {
-                        delay(300)
+                        delay(2000)
                         if (!_uiState.value.isStable) {
                             activeSessionId = null
                             hasAlertedForCurrentSession = false
@@ -377,7 +377,7 @@ class ScaleViewModel(
                 _uiState.update { it.copy(impedanceOhm = imp) }
                 // 阻抗到达说明是真人赤脚测量：复用已有 sessionId 和时间戳，
                 // 确认会话有效并立即写库（阻抗可能晚于下秤到达，此处兜底提交）
-                val sessionId = activeSessionId ?: lastLockedSessionId
+                val sessionId = activeSessionId ?: lastLockedSessionId ?: _uiState.value.currentMeasurement?.id
                 // 实时体重已远超锁定值时，该锁定是爬升中的过早误报，不可提交
                 // （实时体重为 0 表示已下秤，属于延迟阻抗补写，放行）
                 val liveWeight = bleClient.weight.value

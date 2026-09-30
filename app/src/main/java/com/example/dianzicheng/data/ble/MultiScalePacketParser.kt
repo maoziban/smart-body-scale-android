@@ -50,6 +50,46 @@ object MultiScalePacketParser {
     )
 
     /**
+     * 明确已知的非体脂秤厂商 Company ID 集合（手机、电脑、芯片原厂、通用外设等）。
+     * 当广播包来自这些厂商时，严禁盲目将其载荷作为体脂秤协议（如 OKOK / Yolanda）解析，杜绝苹果 Continuity、三星、华为等设备伪报假体重。
+     */
+    val NON_SCALE_COMPANY_IDS = setOf(
+        0x004C, // Apple Inc. (Nearby Action, Continuity, AirDrop 等广播常含 0x10，易误判为 OKOK 202.53kg)
+        0x0006, // Microsoft
+        0x00E0, // Google LLC
+        0x0075, // Samsung Electronics
+        0x027D, // Huawei Technologies
+        0x000A, // Qualcomm
+        0x0001, // Nokia
+        0x0002, // Intel
+        0x000F, // Broadcom
+        0x0087  // Garmin
+    )
+
+    /**
+     * 从 BLE 广播原始字节数组中按标准 AD Structure 格式解析设备名称。
+     */
+    fun parseNameFromBytes(bytes: ByteArray?): String? {
+        if (bytes == null || bytes.isEmpty()) return null
+        var i = 0
+        while (i < bytes.size) {
+            val length = bytes[i].toInt() and 0xFF
+            if (length == 0) break
+            if (i + length >= bytes.size) break
+            val type = bytes[i + 1].toInt() and 0xFF
+            if ((type == 0x08 || type == 0x09) && length > 1) {
+                return try {
+                    String(bytes, i + 2, length - 1, Charsets.UTF_8).trim()
+                } catch (e: Exception) {
+                    null
+                }
+            }
+            i += length + 1
+        }
+        return null
+    }
+
+    /**
      * 解析特征值通知或指示（GATT Notification / Indication）数据包。
      *
      * 自动在所有支持的协议中依次尝试匹配。支持传入用户手动选择的型号 [preferredModel] 优先匹配。
@@ -135,8 +175,39 @@ object MultiScalePacketParser {
     ): ParsedScaleData? {
         if (scanRecord == null) return null
 
+        val bcsParcel = ParcelUuid(UUID_SERVICE_SIG_BCS)
+        val bcsData = scanRecord.getServiceData(bcsParcel)
+
+        val wssParcel = ParcelUuid(UUID_SERVICE_SIG_WSS)
+        val wssData = scanRecord.getServiceData(wssParcel)
+
+        val serviceUuidStrings = scanRecord.serviceUuids?.map { it.uuid.toString() } ?: emptyList()
+
+        return parseAdvertisementBytes(
+            rawBytes = scanRecord.bytes,
+            deviceName = scanRecord.deviceName,
+            serviceUuidStrings = serviceUuidStrings,
+            bcsServiceData = bcsData,
+            wssServiceData = wssData,
+            preferredModel = preferredModel
+        )
+    }
+
+    /**
+     * 底层直接基于原始广播字节与服务信息解析，便于直接在无 Android 硬件环境下进行单元测试与诊断。
+     */
+    fun parseAdvertisementBytes(
+        rawBytes: ByteArray?,
+        deviceName: String? = null,
+        serviceUuidStrings: List<String> = emptyList(),
+        bcsServiceData: ByteArray? = null,
+        wssServiceData: ByteArray? = null,
+        preferredModel: ScaleModel = ScaleModel.AUTO
+    ): ParsedScaleData? {
+        if (rawBytes == null && bcsServiceData == null && wssServiceData == null) return null
+
         // 若广播中明确声明包含 AFU 服务 UUID (FFB0)，则必为双向 GATT 交互秤（需 FFB1 握手与 FFB2 订阅），绝不可作为广播秤处理
-        if (scanRecord.serviceUuids?.any { it.uuid.toString().uppercase().contains("FFB0") } == true) {
+        if (serviceUuidStrings.any { it.uppercase().contains("FFB0") }) {
             return null
         }
 
@@ -146,51 +217,98 @@ object MultiScalePacketParser {
         }
 
         // 1. 尝试从小服务数据 Service Data 中解析小米体脂秤 2 (0x181B)
-        val bcsParcel = ParcelUuid(UUID_SERVICE_SIG_BCS)
-        val bcsData = scanRecord.getServiceData(bcsParcel)
-        if (bcsData != null && bcsData.size >= 10) {
-            parseXiaomiBodyCompositionServiceData(bcsData)?.let { return it }
+        if (bcsServiceData != null && bcsServiceData.size >= 10) {
+            parseXiaomiBodyCompositionServiceData(bcsServiceData)?.let { return it }
         }
 
         // 2. 尝试从小服务数据 Service Data 中解析小米体重秤 1 (0x181D)
-        val wssParcel = ParcelUuid(UUID_SERVICE_SIG_WSS)
-        val wssData = scanRecord.getServiceData(wssParcel)
-        if (wssData != null && wssData.size >= 3) {
-            parseXiaomiWeightScaleServiceData(wssData)?.let { return it }
+        if (wssServiceData != null && wssServiceData.size >= 3) {
+            parseXiaomiWeightScaleServiceData(wssServiceData)?.let { return it }
         }
 
         // 3. 尝试从厂商自定义数据 Manufacturer Data 中解析广播秤（如 Yolanda 免连接广播款、OKOK 广播款）
-        val rawBytes = scanRecord.bytes
         if (rawBytes != null && rawBytes.size >= 6) {
+            val recordName = deviceName ?: parseNameFromBytes(rawBytes)
+            val hasScaleKeyword = recordName?.let { name ->
+                name.contains("Scale", ignoreCase = true) ||
+                name.contains("Weight", ignoreCase = true) ||
+                name.contains("体脂", ignoreCase = true) ||
+                name.contains("电子秤", ignoreCase = true) ||
+                name.contains("体重", ignoreCase = true) ||
+                name.contains("OKOK", ignoreCase = true) ||
+                name.contains("Chipsea", ignoreCase = true) ||
+                name.contains("芯海", ignoreCase = true) ||
+                name.startsWith("CS-", ignoreCase = true) ||
+                name.contains("Yolanda", ignoreCase = true) ||
+                name.contains("Boohee", ignoreCase = true) ||
+                name.contains("薄荷", ignoreCase = true) ||
+                name.contains("Fitdays", ignoreCase = true) ||
+                name.contains("Senssun", ignoreCase = true) ||
+                name.contains("香山", ignoreCase = true)
+            } == true
+
+            val hasScaleService = serviceUuidStrings.any { u ->
+                val up = u.uppercase()
+                up.contains("FFF0") || up.contains("FFE0") || up.contains("FFE5") ||
+                up.contains("181D") || up.contains("181B") || up.contains("FFA0")
+            }
+
             // 严格按 AD 结构遍历，检查厂商数据（0xFF）或服务数据（0x16）
             var i = 0
             while (i < rawBytes.size - 2) {
                 val len = rawBytes[i].toInt() and 0xFF
                 if (len == 0 || i + len >= rawBytes.size) break
                 val type = rawBytes[i + 1].toInt() and 0xFF
+
+                if (type == 0xFF && len >= 3) {
+                    val companyId = (rawBytes[i + 2].toInt() and 0xFF) or ((rawBytes[i + 3].toInt() and 0xFF) shl 8)
+                    // 若属于苹果、谷歌、微软、三星、华为等非秤厂商，且没有明确的体脂秤服务与名称，绝对跳过！
+                    if (companyId in NON_SCALE_COMPANY_IDS && !hasScaleKeyword && !hasScaleService) {
+                        i += len + 1
+                        continue
+                    }
+                }
+
                 if ((type == 0xFF || type == 0x16) && len >= 5) {
                     val mfgPayload = rawBytes.copyOfRange(i + 2, i + 1 + len)
+                    val companyId = if (type == 0xFF && len >= 3) {
+                        (rawBytes[i + 2].toInt() and 0xFF) or ((rawBytes[i + 3].toInt() and 0xFF) shl 8)
+                    } else -1
+
                     // 仅当非 AFU 协议报文（非 0xAC 或第 3 字节非 0x68..0x6E）时尝试 Yolanda 广播包
                     val isAfuHeader = (mfgPayload[0].toInt() and 0xFF) == 0xAC &&
                                      mfgPayload.size >= 4 &&
                                      ((mfgPayload[3].toInt() and 0xFF) in 0x68..0x6E)
-                    if (!isAfuHeader) {
+                    if (!isAfuHeader && companyId !in NON_SCALE_COMPANY_IDS) {
                         parseYolandaIcomon(mfgPayload)?.let { return it }
                     }
 
                     // 针对标准 0xFF 厂商数据（前 2 字节为蓝牙联盟 Company ID），跳过 2 字节后尝试解析
-                    if (len >= 6) {
+                    if (len >= 6 && type == 0xFF) {
                         val payloadWithoutCompany = rawBytes.copyOfRange(i + 4, i + 1 + len)
                         val isAfuCompany = (payloadWithoutCompany[0].toInt() and 0xFF) == 0xAC &&
                                           payloadWithoutCompany.size >= 4 &&
                                           ((payloadWithoutCompany[3].toInt() and 0xFF) in 0x68..0x6E)
-                        if (!isAfuCompany) {
+                        if (!isAfuCompany && companyId !in NON_SCALE_COMPANY_IDS) {
                             parseYolandaIcomon(payloadWithoutCompany)?.let { return it }
                         }
-                        parseOkokChipsea(payloadWithoutCompany)?.let { return it }
+
+                        // OKOK / 芯海透传格式：仅当具备明确的芯海 Company ID、或用户指定了 OKOK 型号、或设备名/服务具有秤特征时才解析！
+                        val isOkokChipseaCandidate = companyId == 0x0590 || // Chipsea 芯海官方 SIG ID
+                                                     companyId in listOf(0x01DA, 0x00D2) || // Telink / Dialog 常用秤芯片
+                                                     preferredModel == ScaleModel.OKOK_CHIPSEA ||
+                                                     hasScaleKeyword ||
+                                                     hasScaleService
+                        if (isOkokChipseaCandidate && companyId !in NON_SCALE_COMPANY_IDS) {
+                            parseOkokChipsea(payloadWithoutCompany)?.let { return it }
+                        }
                     }
-                    // 尝试无 Company ID 的 OKOK / 芯海透传格式
-                    parseOkokChipsea(mfgPayload)?.let { return it }
+
+                    // 尝试无 Company ID 的 OKOK / 芯海透传格式（同理严格限制候选条件）
+                    val isOkokCandidateNoCompany = preferredModel == ScaleModel.OKOK_CHIPSEA || hasScaleKeyword || hasScaleService
+                    if (isOkokCandidateNoCompany && companyId !in NON_SCALE_COMPANY_IDS) {
+                        parseOkokChipsea(mfgPayload)?.let { return it }
+                    }
                 }
                 i += len + 1
             }

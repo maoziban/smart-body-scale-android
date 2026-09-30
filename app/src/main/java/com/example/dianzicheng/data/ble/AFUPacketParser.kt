@@ -52,8 +52,8 @@ object AFUPacketParser {
         // AFU 状态位只可能是 0x00, 0x01（实时）或 0x02（稳定锁定）；若大于 0x05 则非 AFU 帧（如 Yolanda 的 0xCA..0xCE）
         if (status > 0x05) return null
 
-        // offset+6 字节值为 0x02 时表示秤面已稳定锁定
-        val isStable = status == 0x02
+        // offset+6 字节值为 0x02~0x05 时均表示秤面已稳定锁定（0x03~0x05 为体脂阻抗测量中及完成）
+        val isStable = status in 0x02..0x05
 
         // 还原原始体重整数值：高字节需减去协议基准偏移 0x68，再组合为 24 位整数
         val rawWeight = (w3 - 0x68) * 65536 + w4 * 256 + w5
@@ -70,12 +70,12 @@ object AFUPacketParser {
     /**
      * 从原始字节数组中解析生物电阻抗（BIA）数值。
      *
-     * 解析策略（双重容错）：
-     * 1. 优先使用标准 AFU 协议位置（offset+7 高字节，offset+8 低字节）。
-     * 2. 若标准位置阻抗值不在合理范围 [100, 1500] Ω，则尝试备用位置（offset+8, offset+9）。
-     * 3. 两种位置均不满足有效范围则返回 null。
-     *
-     * 有效阻抗范围定义为 100～1500 Ω，低于或高于此区间视为无效数据。
+     * 解析策略：
+     * 1. 优先解析标准 AFU 协议位置（offset+8 高字节，offset+9 低字节，offset+7 为阻抗状态/用户标识）。
+     *    人体生物电阻抗在 100~1500 Ω 之间，要求 high byte (offset+8) > 0，杜绝单字节校验和误判。
+     * 2. 备用尝试兼容 9 字节变体（offset+7, offset+8），仅当 offset+7 在合理高位范围 [1, 5] 时尝试，
+     *    防止将阻抗状态标志 0x02 错作为阻抗高字节导致阻抗固定在 514Ω 不变。
+     * 3. 明确开路（0xFF 0xFF）或穿袜未踩电极（0x00 0x00）返回 null。
      *
      * @param data 蓝牙特征值通知回调中收到的原始字节数组。
      * @return 解析成功时返回阻抗值（单位：Ω，Double 类型）；否则返回 null。
@@ -93,42 +93,46 @@ object AFUPacketParser {
         if (w3 !in 0x68..0x6E) return null
 
         val status = data[offset + 6].toInt() and 0xFF
-        // AFU 协议中 status < 0x02 表示实时动态变动中，阻抗必须在示数稳定（0x02）或阻抗测量阶段才能测得
+        // AFU 协议中 status < 0x02 表示实时动态变动中，阻抗必须在示数稳定锁定或阻抗测量阶段（0x02..0x05）才能测得
         if (status < 0x02 || status > 0x05) return null
 
-        // 优先尝试 7~8 字节（标准 AFU 协议：data[7]=高位, data[8]=低位）
-        if (data.size - offset >= 9) {
-            val imp7 = data[offset + 7].toInt() and 0xFF  // 阻抗高字节
-            val imp8 = data[offset + 8].toInt() and 0xFF  // 阻抗低字节
+        val imp7 = data[offset + 7].toInt() and 0xFF
+        val imp8 = data[offset + 8].toInt() and 0xFF
 
-            // 若两字节明确为 0x00 0x00 或 0xFF 0xFF，说明秤端明确指示未测得阻抗（穿袜、未踩电极、开路）
-            // 此时绝不可尝试备用偏移，必须立即返回 null，防止将尾部校验和或杂质字节误认为阻抗！
-            if ((imp7 == 0 && imp8 == 0) || (imp7 == 0xFF && imp8 == 0xFF)) {
-                return null
-            }
-
-            // 将两字节合并为 16 位无符号整数（大端序）
-            val impA = (imp7 shl 8) or imp8
-            // 校验阻抗值是否落在人体 BIA 有效范围内
-            if (impA in 100..1500) {
-                return impA.toDouble()
-            }
+        // 若明确为 0x00 0x00 或 0xFF 0xFF，说明秤端明确指示未测得阻抗（穿袜、未踩电极、开路）
+        if ((imp7 == 0 && imp8 == 0) || (imp7 == 0xFF && imp8 == 0xFF)) {
+            return null
         }
 
-        // 备用：尝试 8~9 字节（仅在 imp8 > 0 即具备合理的高位字节时尝试，杜绝单字节校验和误判）
+        // 1. 优先解析标准 AFU 16 位阻抗大端序（高字节 offset+8，低字节 offset+9）：
+        // AFU 协议中 offset+7 为阻抗状态/用户标识（如 0x02 测量完成），真正的 16 位阻抗存储在 offset+8 和 offset+9。
+        // 人体生物电阻抗通常在 200~1200Ω 之间，高字节 imp8 在 1..5（1*256=256 ~ 5*256=1280）。
+        // 只有当 imp8 > 0 时组合 (imp8 shl 8) or imp9 才属于有效真实阻抗，且低字节随测量实时变动；
+        // 彻底杜绝了穿袜时单字节校验和误判，以及先前误取 offset+7 与 offset+8 拼出固定 514Ω 的严重缺陷！
         if (data.size - offset >= 10) {
-            val imp8 = data[offset + 8].toInt() and 0xFF  // 备用阻抗高字节
-            val imp9 = data[offset + 9].toInt() and 0xFF  // 备用阻抗低字节
+            val imp9 = data[offset + 9].toInt() and 0xFF
+            if ((imp8 == 0 && imp9 == 0) || (imp8 == 0xFF && imp9 == 0xFF)) {
+                return null
+            }
             if (imp8 > 0) {
-                val impB = (imp8 shl 8) or imp9
-                // 同样校验有效范围
-                if (impB in 100..1500) {
-                    return impB.toDouble()
+                val imp89 = (imp8 shl 8) or imp9
+                if (imp89 in 100..1500) {
+                    return imp89.toDouble()
                 }
             }
         }
 
-        // 两种解析位置均无有效数据，返回 null
+        // 2. 备用兼容：针对非标准/精简 9 字节变体（阻抗紧跟状态位，位于 offset+7 与 offset+8），
+        // 仅在 offset+7 具备合理阻抗高位（1..5）且 offset+8 为低位时才尝试，
+        // 避免阻抗状态标志 0x02 与 imp8 错拼为伪阻抗 514Ω！
+        if (imp7 in 1..5) {
+            val imp78 = (imp7 shl 8) or imp8
+            if (imp78 in 100..1500) {
+                return imp78.toDouble()
+            }
+        }
+
+        // 均无有效阻抗数据，返回 null
         return null
     }
 

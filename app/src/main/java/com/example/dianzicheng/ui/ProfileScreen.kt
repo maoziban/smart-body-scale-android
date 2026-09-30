@@ -52,6 +52,7 @@ fun ProfileContent(
     onAddMember: (String, Sex, Double, Long, Double) -> Unit,
     onDeleteMember: (FamilyMember) -> Unit,
     onResetPairing: () -> Unit,
+    onNavigateToPairing: () -> Unit = onResetPairing,
     pairedMac: String? = null,
     pairedDeviceName: String? = null,
     selectedScaleModel: ScaleModel = ScaleModel.AUTO,
@@ -89,11 +90,17 @@ fun ProfileContent(
 
     Scaffold(
         topBar = {
-            LargeTopAppBar(
-                title = { Text("我的", fontWeight = FontWeight.Bold) },
+            TopAppBar(
+                title = {
+                    Text(
+                        text = "我的",
+                        fontWeight = FontWeight.Bold,
+                        style = MaterialTheme.typography.titleLarge
+                    )
+                },
                 actions = {
                     IconButton(onClick = { showAddDialog = true }) {
-                        Icon(Icons.Default.Add, contentDescription = "添加")
+                        Icon(Icons.Default.Add, contentDescription = "添加成员")
                     }
                 }
             )
@@ -104,8 +111,8 @@ fun ProfileContent(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding),
-            contentPadding = PaddingValues(24.dp),
-            verticalArrangement = Arrangement.spacedBy(24.dp)
+            contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 12.dp, bottom = 24.dp),
+            verticalArrangement = Arrangement.spacedBy(20.dp)
         ) {
             // Member Section
             item {
@@ -377,7 +384,7 @@ fun ProfileContent(
                         icon = Icons.Default.Bluetooth,
                         onClick = {
                             if (pairedMac.isNullOrEmpty()) {
-                                onResetPairing()
+                                onNavigateToPairing()
                             } else {
                                 showUnpairConfirmDialog = true
                             }
@@ -409,7 +416,7 @@ fun ProfileContent(
                     )
                     SettingsItem(
                         title = "关于软件",
-                        subtitle = "版本 1.4.0",
+                        subtitle = "版本 1.4.1",
                         icon = Icons.Default.Info,
                         onClick = { }
                     )
@@ -956,7 +963,8 @@ fun AddMemberDialog(
 @Composable
 fun ProfileScreen(
     viewModel: ProfileViewModel,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    onNavigateToPairing: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val members by viewModel.members.collectAsState()
@@ -995,6 +1003,7 @@ fun ProfileScreen(
         onAddMember = { name, sex, height, birth, weight -> viewModel.addMember(name, sex, height, birth, weight) },
         onDeleteMember = { viewModel.deleteMember(it) },
         onResetPairing = { viewModel.resetPairing() },
+        onNavigateToPairing = onNavigateToPairing,
         pairedMac = pairedMac,
         pairedDeviceName = pairedDeviceName,
         selectedScaleModel = selectedScaleModel,

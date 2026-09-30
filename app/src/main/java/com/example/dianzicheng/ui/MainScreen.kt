@@ -45,35 +45,40 @@ fun MainScreen(
     }
 
     if (!isPairingComplete) {
-        PairingScreen(scaleViewModel, onPairingComplete)
+        PairingScreen(
+            viewModel = scaleViewModel,
+            onPairingComplete = onPairingComplete,
+            onNavigateBack = null
+        )
         return
     }
 
+    val isSubScreen = currentRoute == "pairing" || currentRoute?.startsWith("detail/") == true
+
     Scaffold(
         bottomBar = {
-            NavigationBar {
-                items.forEachIndexed { index, item ->
-                    val route = routes[index]
-                    val isSelected = when (route) {
-                        "history" -> currentRoute == "history" || currentRoute?.startsWith("detail/") == true
-                        else -> currentRoute == route
-                    }
-                    NavigationBarItem(
-                        icon = { Icon(icons[index], contentDescription = item) },
-                        label = { Text(item) },
-                        selected = isSelected,
-                        onClick = {
-                            if (currentRoute != route) {
-                                navController.navigate(route) {
-                                    popUpTo(navController.graph.findStartDestination().id) {
-                                        saveState = true
+            if (!isSubScreen) {
+                NavigationBar {
+                    items.forEachIndexed { index, item ->
+                        val route = routes[index]
+                        val isSelected = currentRoute == route
+                        NavigationBarItem(
+                            icon = { Icon(icons[index], contentDescription = item) },
+                            label = { Text(item) },
+                            selected = isSelected,
+                            onClick = {
+                                if (currentRoute != route) {
+                                    navController.navigate(route) {
+                                        popUpTo(navController.graph.findStartDestination().id) {
+                                            saveState = true
+                                        }
+                                        launchSingleTop = true
+                                        restoreState = true
                                     }
-                                    launchSingleTop = true
-                                    restoreState = true
                                 }
                             }
-                        }
-                    )
+                        )
+                    }
                 }
             }
         }
@@ -86,7 +91,7 @@ fun MainScreen(
             composable("dashboard") {
                 DashboardScreen(
                     viewModel = scaleViewModel,
-                    onNavigateToPairing = onResetPairing
+                    onNavigateToPairing = { navController.navigate("pairing") }
                 )
             }
             composable("history") { 
@@ -97,7 +102,19 @@ fun MainScreen(
                     }
                 )
             }
-            composable("profile") { ProfileScreen(profileViewModel) }
+            composable("profile") {
+                ProfileScreen(
+                    viewModel = profileViewModel,
+                    onNavigateToPairing = { navController.navigate("pairing") }
+                )
+            }
+            composable("pairing") {
+                PairingScreen(
+                    viewModel = scaleViewModel,
+                    onPairingComplete = { navController.popBackStack() },
+                    onNavigateBack = { navController.popBackStack() }
+                )
+            }
             composable(
                 route = "detail/{id}",
                 arguments = listOf(navArgument("id") { type = NavType.StringType })

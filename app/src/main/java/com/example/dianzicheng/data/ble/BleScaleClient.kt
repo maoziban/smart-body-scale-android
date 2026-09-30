@@ -108,7 +108,8 @@ class BleScaleClient(private val context: Context) {
         val isWifiScale: Boolean = false,
         val isConfirmedScale: Boolean = true,
         val matchedModel: ScaleModel = ScaleModel.AUTO,
-        val protocolName: String = ""
+        val protocolName: String = "",
+        val liveWeightKg: Double? = null
     )
 
     /**
@@ -161,28 +162,8 @@ class BleScaleClient(private val context: Context) {
      * @param bytes BLE ScanRecord 原始字节数组。
      * @return 解析成功返回设备名称字符串（已去除首尾空白），否则返回 null。
      */
-    private fun parseNameFromBytes(bytes: ByteArray?): String? {
-        if (bytes == null || bytes.isEmpty()) return null
-        var i = 0
-        // 按 AD Structure 格式逐段遍历：每段格式为 [length(1B)] [type(1B)] [value(length-1 B)]
-        while (i < bytes.size) {
-            val length = bytes[i].toInt() and 0xFF
-            if (length == 0) break                        // length 为 0 表示广播数据结束
-            if (i + length >= bytes.size) break           // 防止越界
-            val type = bytes[i + 1].toInt() and 0xFF
-            // 0x08 = 缩短本地名称，0x09 = 完整本地名称
-            if ((type == 0x08 || type == 0x09) && length > 1) {
-                return try {
-                    // value 从 i+2 开始，长度为 length-1
-                    String(bytes, i + 2, length - 1, Charsets.UTF_8).trim()
-                } catch (e: Exception) {
-                    null
-                }
-            }
-            i += length + 1  // 跳到下一个 AD 结构
-        }
-        return null
-    }
+    private fun parseNameFromBytes(bytes: ByteArray?): String? = MultiScalePacketParser.parseNameFromBytes(bytes)
+
 
     /**
      * 根据设备名称与广播包特征，推断其对应的体脂秤型号枚举。
@@ -248,22 +229,48 @@ class BleScaleClient(private val context: Context) {
         val serviceUuids = scanRecord?.serviceUuids
         val rawBytes = scanRecord?.bytes
         // 尝试从多个来源获取设备名称（优先系统缓存，其次广播字段，最后手动解析）
-        val deviceName = device.name ?: scanRecord?.deviceName ?: parseNameFromBytes(rawBytes)
+        val deviceName = device.name ?: scanRecord?.deviceName ?: MultiScalePacketParser.parseNameFromBytes(rawBytes)
 
         // 1. 已配对过的 MAC 地址精确匹配
         val isMatchedMac = !lastPairedMac.isNullOrEmpty() && device.address.equals(lastPairedMac, ignoreCase = true)
         if (isMatchedMac) return true
 
-        // 2. 支持的体脂秤/体重秤 Service UUID 匹配（含 AFU、SIG WSS/BCS、OKOK/芯海等）
+        // 2. 检查黑名单厂商（Apple、Google、Microsoft、Samsung、Huawei 等设备绝对不是体脂秤）
+        if (rawBytes != null && rawBytes.size >= 4) {
+            var i = 0
+            while (i < rawBytes.size - 3) {
+                val len = rawBytes[i].toInt() and 0xFF
+                if (len == 0 || i + len >= rawBytes.size) break
+                val type = rawBytes[i + 1].toInt() and 0xFF
+                if (type == 0xFF && len >= 3) {
+                    val companyId = (rawBytes[i + 2].toInt() and 0xFF) or ((rawBytes[i + 3].toInt() and 0xFF) shl 8)
+                    if (companyId in MultiScalePacketParser.NON_SCALE_COMPANY_IDS) {
+                        val hasExplicitScaleName = deviceName?.let { name ->
+                            name.contains("Scale", ignoreCase = true) ||
+                            name.contains("Weight", ignoreCase = true) ||
+                            name.contains("体脂", ignoreCase = true) ||
+                            name.contains("电子秤", ignoreCase = true) ||
+                            name.contains("体重", ignoreCase = true)
+                        } == true
+                        if (!hasExplicitScaleName) {
+                            return false
+                        }
+                    }
+                }
+                i += len + 1
+            }
+        }
+
+        // 3. 支持的体脂秤/体重秤 Service UUID 匹配（含 AFU、SIG WSS/BCS、OKOK/芯海等）
         val hasService = serviceUuids?.any { it.uuid in SUPPORTED_SERVICE_UUIDS } == true
         if (hasService) return true
 
-        // 3. 广播数据包直接可解析出有效体重（如小米秤 Service Data、免配对广播秤）
+        // 4. 广播数据包直接可解析出有效体重（如小米秤 Service Data、免配对广播秤）
         if (MultiScalePacketParser.parseAdvertisement(scanRecord, preferredModel) != null) {
             return true
         }
 
-        // 4. 称重设备常见品牌与关键词精确匹配（覆盖主流与小众品牌）
+        // 5. 称重设备常见品牌与关键词精确匹配（覆盖主流与小众品牌）
         val nameMatched = deviceName?.let { name ->
             name.contains("AFU", ignoreCase = true) ||
             name.contains("WL-TZ", ignoreCase = true) ||
@@ -332,19 +339,11 @@ class BleScaleClient(private val context: Context) {
             name.startsWith("C08", ignoreCase = true) ||
             name.startsWith("C09", ignoreCase = true) ||
             name.startsWith("C10", ignoreCase = true) ||
-            name.contains("Health", ignoreCase = true) ||
-            name.contains("Body", ignoreCase = true) ||
-            name.contains("BIA", ignoreCase = true) ||
-            name.contains("Fat", ignoreCase = true) ||
-            name.startsWith("BLE-", ignoreCase = true) ||
-            name.startsWith("BLE0", ignoreCase = true) ||
-            name.startsWith("BLE1", ignoreCase = true) ||
-            name.contains("合泰", ignoreCase = true) ||
-            name.contains("Fit", ignoreCase = true)
+            name.contains("合泰", ignoreCase = true)
         } == true
         if (nameMatched) return true
 
-        // 5. 检查广播 AD 结构中是否声明了蓝牙 SIG 标准外观类型 (Appearance = 0x0400..0x043F 体重/体脂秤)
+        // 6. 检查广播 AD 结构中是否声明了蓝牙 SIG 标准外观类型 (Appearance = 0x0400..0x043F 体重/体脂秤)
         if (rawBytes != null && rawBytes.size >= 4) {
             var i = 0
             while (i < rawBytes.size - 3) {
@@ -359,7 +358,7 @@ class BleScaleClient(private val context: Context) {
             }
         }
 
-        // 6. 解析 BLE 广播数据中的厂商自定义数据包结构 (0xFF 或 0x16)，校验 0xAC / OKOK / Yolanda 协议特征
+        // 7. 解析 BLE 广播数据中的厂商自定义数据包结构 (0xFF 或 0x16)，校验已知秤芯片 Company ID 与专属协议特征
         if (rawBytes != null && rawBytes.size >= 4) {
             var i = 0
             while (i < rawBytes.size - 2) {
@@ -371,21 +370,10 @@ class BleScaleClient(private val context: Context) {
                     // 0x01A7 (Yolanda / Fitdays), 0x0157 (Huami / Xiaomi), 0x0590 (Chipsea), 0x0209 (Yolanda 变体), 0x00D2 (Dialog), 0x01DA (Telink)
                     if (companyId in listOf(0x01A7, 0x0157, 0x0590, 0x0209, 0x00D2, 0x01DA)) return true
                 }
-                if ((type == 0xFF || type == 0x16) && len >= 2) {
+                if (type == 0x16 && len >= 2) {
                     val b0 = rawBytes[i + 2].toInt() and 0xFF
-                    // 无 Company ID 前缀时首字节为 0xAC / 0xA2 / 0xA3 / 0xCA
+                    // 服务数据首字节为 0xAC / 0xA2 / 0xA3 / 0xCA 时判定为 Yolanda/薄荷
                     if (b0 == 0xAC || b0 == 0xA2 || b0 == 0xA3 || b0 == 0xCA) return true
-                    // 存在标准 2B Company ID 时 (len >= 4)，第 3 字节为 0xAC / 0xCA
-                    if (len >= 4) {
-                        val b2 = rawBytes[i + 4].toInt() and 0xFF
-                        if (b2 == 0xAC || b2 == 0xA2 || b2 == 0xA3 || b2 == 0xCA) return true
-                    }
-                    // 检查是否为 OKOK / 芯海 0x10 / 0xCF 广播帧
-                    if (b0 == 0x10 || b0 == 0xCF) return true
-                    if (len >= 4) {
-                        val b2 = rawBytes[i + 4].toInt() and 0xFF
-                        if (b2 == 0x10 || b2 == 0xCF) return true
-                    }
                 }
                 i += len + 1
             }
@@ -411,14 +399,62 @@ class BleScaleClient(private val context: Context) {
             if (isPairingMode || lastPairedMac.isNullOrEmpty()) {
                 val isScale = isScaleAdvertisement(result)
                 val rawBytes = result.scanRecord?.bytes
-                val parsedName = device.name ?: result.scanRecord?.deviceName ?: parseNameFromBytes(rawBytes)
+                val parsedName = device.name ?: result.scanRecord?.deviceName ?: MultiScalePacketParser.parseNameFromBytes(rawBytes)
 
-                // 即使设备未匹配严格白名单，只要具备一定信号强度 (RSSI >= -85 dBm) 或者是已知秤，均在配对模式下予以呈现
-                if (isScale || result.rssi >= -85) {
-                    val defaultName = if (isScale) "体脂秤设备 (${device.address.takeLast(5)})" else "蓝牙设备 (${device.address.takeLast(5)})"
-                    val name = parsedName ?: defaultName
-                    val isAdv = MultiScalePacketParser.parseAdvertisement(result.scanRecord, preferredModel) != null
+                // 检查设备是否来自已知非秤厂商（Apple、Google、Microsoft、Samsung、Huawei 等）
+                var isBlacklistedVendor = false
+                if (rawBytes != null && rawBytes.size >= 4) {
+                    var i = 0
+                    while (i < rawBytes.size - 3) {
+                        val len = rawBytes[i].toInt() and 0xFF
+                        if (len == 0 || i + len >= rawBytes.size) break
+                        val type = rawBytes[i + 1].toInt() and 0xFF
+                        if (type == 0xFF && len >= 3) {
+                            val companyId = (rawBytes[i + 2].toInt() and 0xFF) or ((rawBytes[i + 3].toInt() and 0xFF) shl 8)
+                            if (companyId in MultiScalePacketParser.NON_SCALE_COMPANY_IDS) {
+                                isBlacklistedVendor = true
+                                break
+                            }
+                        }
+                        i += len + 1
+                    }
+                }
+
+                // 过滤规则：
+                // 1. 确认为体脂秤的设备：加入列表；
+                // 2. 属于已知非秤厂商：严禁加入任何列表，杜绝视觉污染与误导；
+                // 3. 未确认为秤的设备：仅当有明确设备名（非匿名空串）且信号较强 (RSSI >= -75 dBm) 时，作为逃生兜底进入折叠列表。
+                val shouldInclude = if (isScale) {
+                    true
+                } else if (!isBlacklistedVendor && !parsedName.isNullOrBlank() && result.rssi >= -75) {
+                    true
+                } else {
+                    false
+                }
+
+                if (shouldInclude) {
+                    val advScaleData = if (isScale) MultiScalePacketParser.parseAdvertisement(result.scanRecord, preferredModel) else null
+                    val liveWeight = if (isScale && advScaleData != null && advScaleData.weightKg in 3.0..350.0) advScaleData.weightKg else null
                     val matchedModel = detectMatchedModel(parsedName, result.scanRecord)
+                    val isXiaomi = matchedModel == ScaleModel.XIAOMI_SCALE_1 || matchedModel == ScaleModel.XIAOMI_SCALE_2 ||
+                                   parsedName?.startsWith("MIBFS", ignoreCase = true) == true ||
+                                   parsedName?.startsWith("MISCALE", ignoreCase = true) == true ||
+                                   parsedName?.contains("小米", ignoreCase = true) == true ||
+                                   parsedName?.contains("米家", ignoreCase = true) == true
+                    val isBroadcast = advScaleData != null || isXiaomi
+
+                    val defaultName = if (isScale) {
+                        if (advScaleData != null && advScaleData.protocolName.isNotBlank()) {
+                            "${advScaleData.protocolName} (${device.address.takeLast(5)})"
+                        } else if (matchedModel != ScaleModel.AUTO) {
+                            "${matchedModel.displayName} (${device.address.takeLast(5)})"
+                        } else {
+                            "体脂秤 (${device.address.takeLast(5)})"
+                        }
+                    } else {
+                        parsedName ?: "蓝牙设备 (${device.address.takeLast(5)})"
+                    }
+                    val name = parsedName ?: defaultName
 
                     val currentList = _discoveredScales.value.toMutableList()
                     val existingIndex = currentList.indexOfFirst { it.address.equals(device.address, ignoreCase = true) }
@@ -426,10 +462,12 @@ class BleScaleClient(private val context: Context) {
                         name = name,
                         address = device.address,
                         rssi = result.rssi,
-                        isBroadcastScale = isAdv,
+                        isBroadcastScale = isBroadcast,
                         isWifiScale = false,
                         isConfirmedScale = isScale,
-                        matchedModel = matchedModel
+                        matchedModel = matchedModel,
+                        protocolName = advScaleData?.protocolName ?: matchedModel.protocolName,
+                        liveWeightKg = liveWeight
                     )
                     if (existingIndex >= 0) {
                         currentList[existingIndex] = item
@@ -437,11 +475,14 @@ class BleScaleClient(private val context: Context) {
                         currentList.add(item)
                     }
                     // 排序规则：
-                    // 1. 若用户指定了型号偏好 (preferredModel != AUTO)，与该型号匹配的设备排在最顶端
-                    // 2. 其次是确认为体脂秤或 Wi-Fi 秤的设备
-                    // 3. 最后按信号强度 (RSSI) 降序排列
+                    // 1. 正在踩秤称重中（含有实时体重数据 > 0）的设备排在最最顶端！
+                    // 2. 若用户指定了型号偏好 (preferredModel != AUTO)，与该型号匹配的设备排在顶端
+                    // 3. 确认为体脂秤或 Wi-Fi 秤的设备排在未确认的普通蓝牙设备前面
+                    // 4. 最后按信号强度 (RSSI) 降序排列
                     currentList.sortWith(
                         compareByDescending<DiscoveredScaleDevice> {
+                            (it.liveWeightKg != null && it.liveWeightKg > 0.0)
+                        }.thenByDescending {
                             preferredModel != ScaleModel.AUTO && it.matchedModel == preferredModel
                         }.thenByDescending {
                             it.isConfirmedScale || it.isWifiScale

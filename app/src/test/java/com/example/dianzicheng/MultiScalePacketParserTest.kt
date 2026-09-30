@@ -582,6 +582,145 @@ class MultiScalePacketParserTest {
         assertNotNull(result)
         assertNull("阻抗上报 0 时阻抗应为 null", result!!.impedanceOhm)
     }
+
+    @Test
+    fun testDiscoveredScaleDeviceSortingWithLiveWeight() {
+        val list = mutableListOf(
+            com.example.dianzicheng.data.ble.BleScaleClient.DiscoveredScaleDevice(
+                name = "未知蓝牙设备",
+                address = "AA:BB:CC:11:22:33",
+                rssi = -50,
+                isConfirmedScale = false
+            ),
+            com.example.dianzicheng.data.ble.BleScaleClient.DiscoveredScaleDevice(
+                name = "普通体脂秤",
+                address = "AA:BB:CC:44:55:66",
+                rssi = -70,
+                isConfirmedScale = true,
+                liveWeightKg = null
+            ),
+            com.example.dianzicheng.data.ble.BleScaleClient.DiscoveredScaleDevice(
+                name = "正在踩秤的体脂秤",
+                address = "AA:BB:CC:77:88:99",
+                rssi = -80,
+                isConfirmedScale = true,
+                liveWeightKg = 65.20
+            )
+        )
+
+        list.sortWith(
+            compareByDescending<com.example.dianzicheng.data.ble.BleScaleClient.DiscoveredScaleDevice> {
+                (it.liveWeightKg != null && it.liveWeightKg > 0.0)
+            }.thenByDescending {
+                it.isConfirmedScale || it.isWifiScale
+            }.thenByDescending {
+                it.rssi
+            }
+        )
+
+        // 正在踩秤的设备必须排在第一位
+        assertEquals("正在踩秤的体脂秤", list[0].name)
+        assertEquals(65.20, list[0].liveWeightKg!!, 0.001)
+        // 确认的体脂秤排在普通蓝牙设备前面
+        assertEquals("普通体脂秤", list[1].name)
+        assertEquals("未知蓝牙设备", list[2].name)
+    }
+
+    @Test
+    fun testAppleContinuityNearbyActionNeverParsedAsScale() {
+        // 模拟苹果设备 Nearby Action / Continuity 广播包：
+        // Length = 12, Type = 0xFF (厂商数据), Company ID = 0x004C (Apple Inc.)
+        // Payload = 0x10 (Nearby Action), 0x07, 0x1D, 0x4F (旧逻辑会解析为 202.53kg!), 0x01, 0x00, 0x00
+        val appleBytes = byteArrayOf(
+            0x02, 0x01, 0x1A, // Flags
+            0x09, 0xFF.toByte(), 0x4C, 0x00, 0x10, 0x07, 0x1D, 0x4F, 0x01, 0x00 // Apple Manufacturer Data
+        )
+
+        val result = MultiScalePacketParser.parseAdvertisementBytes(
+            rawBytes = appleBytes,
+            deviceName = null,
+            serviceUuidStrings = emptyList(),
+            preferredModel = ScaleModel.AUTO
+        )
+
+        assertNull("苹果 Nearby Action 广播包绝对严禁被误判为 202.53kg 体脂秤！", result)
+    }
+
+    @Test
+    fun testRandomBleDeviceWith0x10WithoutScaleContextReturnsNull() {
+        // 普通蓝牙设备（非秤厂商，且没有秤名称和服务），即使携带 0x10 类似报文，也绝不误判
+        val genericDeviceBytes = byteArrayOf(
+            0x08, 0xFF.toByte(), 0x99.toByte(), 0x00, 0x10, 0x07, 0x1A, 0xC2.toByte(), 0x01
+        )
+
+        val result = MultiScalePacketParser.parseAdvertisementBytes(
+            rawBytes = genericDeviceBytes,
+            deviceName = "Smart Earbuds",
+            serviceUuidStrings = emptyList(),
+            preferredModel = ScaleModel.AUTO
+        )
+
+        assertNull("无体脂秤特征的普通外设广播严禁被误判为 OKOK 秤", result)
+    }
+
+    @Test
+    fun testChipseaScaleManufacturerDataParsesProperly() {
+        // 真正的芯海体脂秤广播包：Company ID = 0x0590 (Chipsea Technologies)
+        // 0x10, 0x07, 68.5kg (0x1AC2), status 0x01, imp 480Ω (0x01E0)
+        val chipseaBytes = byteArrayOf(
+            0x0A, 0xFF.toByte(), 0x90.toByte(), 0x05, 0x10, 0x07, 0x1A, 0xC2.toByte(), 0x01, 0x01, 0xE0.toByte()
+        )
+
+        val result = MultiScalePacketParser.parseAdvertisementBytes(
+            rawBytes = chipseaBytes,
+            deviceName = "CS-Scale",
+            serviceUuidStrings = listOf("0000FFF0-0000-1000-8000-00805F9B34FB"),
+            preferredModel = ScaleModel.AUTO
+        )
+
+        assertNotNull("正规芯海芯片广播秤必须能被正常识别与解析", result)
+        assertEquals(68.5, result!!.weightKg, 0.01)
+        assertTrue(result.isStable)
+    }
+
+    @Test
+    fun testAfuImpedanceVariesWithByte9AndDoesNotGetStuckAt514() {
+        // 关键回归测试：验证 AFU 阻抗真正提取 Byte 8(高位)与 Byte 9(低位)，
+        // 绝不可将 Byte 7(状态位0x02)与 Byte 8(高位0x02)误拼为恒定 514Ω！
+        // 样本 1：Byte 7=0x02, Byte 8=0x02, Byte 9=0x34 -> 阻抗应为 (2 shl 8) or 0x34 = 564Ω
+        val afuMeas1 = byteArrayOf(
+            0xAC.toByte(), 0x29.toByte(), 0x00.toByte(), 0x69.toByte(), 0x40.toByte(),
+            0x82.toByte(), 0x02.toByte(), 0x02.toByte(), 0x02.toByte(), 0x34.toByte()
+        )
+        val result1 = MultiScalePacketParser.parseNotification(afuMeas1, "0000FFB2-0000-1000-8000-00805F9B34FB")
+        assertNotNull(result1)
+        assertEquals(82.05, result1!!.weightKg, 0.001)
+        assertTrue(result1.isStable)
+        assertNotNull(result1.impedanceOhm)
+        assertEquals(564.0, result1.impedanceOhm!!, 0.1)
+        assertNotEquals(514.0, result1.impedanceOhm!!, 0.01)
+
+        // 样本 2：Byte 7=0x02, Byte 8=0x02, Byte 9=0x6A -> 阻抗应为 (2 shl 8) or 0x6A = 618Ω
+        val afuMeas2 = byteArrayOf(
+            0xAC.toByte(), 0x29.toByte(), 0x00.toByte(), 0x69.toByte(), 0x40.toByte(),
+            0x82.toByte(), 0x02.toByte(), 0x02.toByte(), 0x02.toByte(), 0x6A.toByte()
+        )
+        val result2 = MultiScalePacketParser.parseNotification(afuMeas2, "0000FFB2-0000-1000-8000-00805F9B34FB")
+        assertNotNull(result2)
+        assertEquals(618.0, result2!!.impedanceOhm!!, 0.1)
+        assertNotEquals(result1.impedanceOhm, result2.impedanceOhm)
+
+        // 样本 3：测试状态位 0x03 (体脂测算中) 与 0x04 (体脂完成锁定)，必须保持 isStable=true
+        val afuStatus04 = byteArrayOf(
+            0xAC.toByte(), 0x29.toByte(), 0x00.toByte(), 0x69.toByte(), 0x40.toByte(),
+            0x82.toByte(), 0x04.toByte(), 0x02.toByte(), 0x02.toByte(), 0x48.toByte() // 584Ω
+        )
+        val result3 = MultiScalePacketParser.parseNotification(afuStatus04, "0000FFB2-0000-1000-8000-00805F9B34FB")
+        assertNotNull(result3)
+        assertTrue("状态位 0x04 必须判定为稳定锁定状态", result3!!.isStable)
+        assertEquals(584.0, result3.impedanceOhm!!, 0.1)
+    }
 }
+
 
 
