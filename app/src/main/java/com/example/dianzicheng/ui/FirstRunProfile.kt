@@ -21,40 +21,6 @@ import com.example.dianzicheng.data.local.AppLogger
 import com.example.dianzicheng.domain.Sex
 import java.util.Calendar
 
-/**
- * 首次启动基础信息引导。
- *
- * 使用方式：在「无论配对状态如何都会被组合」的位置调用一行即可，例如 `MainScreen` 开头：
- * ```
- * FirstRunProfileOnboarding(
- *     onSave = { name, sex, heightCm, birthDateEpochMs ->
- *         profileViewModel.upsertPrimaryMember(name, sex, heightCm, birthDateEpochMs)
- *     }
- * )
- * ```
- * 注意不要放在 `MainScreen` 的空状态 / 配对页 early return 之后，否则会被跳过。
- *
- * 也不建议放在 `PairingScreen` 内：该页面仅在「尚未完成配对」时才渲染，
- * 早已配对完成的设备永远不会经过它，弹窗也就永远不会出现。
- *
- * 写库必须通过 ViewModel → Repository → **与 App 其余部分同一个 Room 实例**，
- * 原因见文件末尾的说明。
- */
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// 内置变量：是否还需要在启动时提醒用户完善基础信息
-// ═══════════════════════════════════════════════════════════════════════════════
-
-/**
- * 「是否还需要提醒」这个变量。
- *
- * - 首次安装为 **true**（需要提醒）
- * - 启动弹窗**展示过一次后立即置为 false**，此后每次启动都不再提醒
- *
- * 注意：这里没有用一个普通的顶层 `var`，因为它只活在进程内存里，杀进程重启就会
- * 变回初始值，达不到「以后不再提醒」的效果。所以底层持久化在 SharedPreferences，
- * 对外仍然是同一个布尔变量的读写语义。
- */
 object FirstRunProfileState {
 
     private const val PREFS_NAME = "first_run_profile"
@@ -79,21 +45,7 @@ object FirstRunProfileState {
         AppLogger.i("FirstRunProfile", "引导开关已重置为 true")
     }
 }
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// 对外入口（一行调用）
-// ═══════════════════════════════════════════════════════════════════════════════
-
-/**
- * 首次启动引导入口。放在 App 启动链路上任意「必定被组合」的位置调用一次即可。
- *
- * 逻辑：读一次开关 → 需要提醒就弹窗并**立刻把开关置为 false** → 无论用户是填写
- * 保存还是跳过/误触关闭，本次之后都不再提醒。
- *
- * @param onSave 用户点击「保存并开始使用」且校验通过时回调。
- *   **务必接到 `ProfileViewModel.upsertPrimaryMember(...)`**，不要在本文件里自行
- *   创建 Room 实例写库，否则首页成员信息不会刷新（详见文件末尾说明）。
- */
+//对外接口
 @Composable
 fun FirstRunProfileOnboarding(
     onSave: (name: String, sex: Sex, heightCm: Double, birthDateEpochMs: Long) -> Unit
@@ -117,19 +69,7 @@ fun FirstRunProfileOnboarding(
     }
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
 // 弹窗本体
-// ═══════════════════════════════════════════════════════════════════════════════
-
-/**
- * 基础信息填写弹窗。
- *
- * 内容：姓名 / 性别 / 身高(cm) / 年龄(岁)，底部固定提供「跳过」。
- * 校验通过后回调 [onSave]，由调用方交给 ViewModel 落库。
- *
- * @param onSave    校验通过后回调（name, sex, heightCm, birthDateEpochMs）
- * @param onDismiss 弹窗关闭（保存、点「跳过」、点击外部或返回键均会回调）
- */
 @Composable
 private fun FirstRunProfileDialog(
     onSave: (String, Sex, Double, Long) -> Unit,
@@ -268,12 +208,6 @@ private fun FirstRunProfileDialog(
     )
 }
 
-/**
- * 由「年龄」推算出生日期时间戳。
- *
- * 使用 [Calendar.add] 按年回退，可正确处理闰年（避免 365 天近似带来的偏差）。
- * 结果必然小于当前时间，符合 `BodyAlgorithm.calculateAge` 对入参的要求。
- */
 private fun birthDateFromAge(age: Int): Long =
     Calendar.getInstance().apply { add(Calendar.YEAR, -age) }.timeInMillis
 
