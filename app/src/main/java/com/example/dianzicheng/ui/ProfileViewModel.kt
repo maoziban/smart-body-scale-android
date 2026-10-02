@@ -15,6 +15,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -145,6 +146,46 @@ class ProfileViewModel(
     /** 从数据库删除指定家庭成员 */
     fun deleteMember(member: FamilyMember) {
         viewModelScope.launch { repository.deleteMember(member) }
+    }
+
+    fun upsertPrimaryMember(
+        name: String,
+        sex: Sex,
+        heightCm: Double,
+        birthDateEpochMs: Long
+    ) {
+        viewModelScope.launch {
+            try {
+                // 现查一次库，拿到当前成员列表（而不是复用 members.value，
+                // 因为该 StateFlow 是 Lazily 启动的，本页未被打开时其值只是初始空列表）
+                val existing = repository.getMembers().first()
+                val untouchedDefault = existing.singleOrNull()
+                    ?.takeIf { it.name == "自己" && it.referenceWeightKg <= 0.0 }
+
+                val member = if (untouchedDefault != null) {
+                    AppLogger.i("FirstRunProfile", "覆盖默认成员「自己」为: $name, ${heightCm}cm")
+                    untouchedDefault.copy(
+                        name = name,
+                        sex = sex,
+                        heightCm = heightCm,
+                        birthDateEpochMs = birthDateEpochMs
+                    )
+                } else {
+                    AppLogger.i("FirstRunProfile", "新增成员: $name, ${heightCm}cm")
+                    FamilyMember(
+                        id = UUID.randomUUID().toString(),
+                        name = name,
+                        sex = sex,
+                        heightCm = heightCm,
+                        birthDateEpochMs = birthDateEpochMs,
+                        referenceWeightKg = 0.0
+                    )
+                }
+                repository.saveMember(member)
+            } catch (e: Exception) {
+                AppLogger.e("FirstRunProfile", "保存基础信息失败: ${e.message}")
+            }
+        }
     }
 
     /** 清除已配对的蓝牙设备 MAC 地址，触发重新配对流程 */
