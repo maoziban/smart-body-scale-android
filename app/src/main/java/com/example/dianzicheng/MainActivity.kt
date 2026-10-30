@@ -118,6 +118,13 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+        lifecycleScope.launch {
+            preferenceManager.selectedBodyAlgorithm.collect { algoId ->
+                com.example.dianzicheng.domain.BodyAlgorithm.currentAlgorithm =
+                    com.example.dianzicheng.domain.BodyAlgorithmType.fromId(algoId)
+            }
+        }
+
         val filter = android.content.IntentFilter(android.bluetooth.BluetoothAdapter.ACTION_STATE_CHANGED)
         registerReceiver(bluetoothReceiver, filter)
 

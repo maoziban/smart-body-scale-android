@@ -8,6 +8,8 @@ import com.example.dianzicheng.data.local.AppLogger
 import com.example.dianzicheng.data.local.PreferenceManager
 import com.example.dianzicheng.data.repository.ProfileRepository
 import com.example.dianzicheng.data.repository.ScaleRepository
+import com.example.dianzicheng.domain.BodyAlgorithm
+import com.example.dianzicheng.domain.BodyAlgorithmType
 import com.example.dianzicheng.domain.FamilyMember
 import com.example.dianzicheng.domain.ScaleModel
 import com.example.dianzicheng.domain.Sex
@@ -67,6 +69,24 @@ class ProfileViewModel(
         viewModelScope.launch {
             preferenceManager.saveSelectedScaleModel(model.id)
             AppLogger.i("ProfileVM", "已切换体脂秤型号偏好为: ${model.displayName} (${model.id})")
+        }
+    }
+
+    // ── 体成分计算算法设置 ────────────────────────────────────────────────────
+
+    /** 当前选中的体成分算法（来自 DataStore，默认商业对标模式） */
+    val selectedBodyAlgorithm: StateFlow<BodyAlgorithmType> = preferenceManager.selectedBodyAlgorithm
+        .map { BodyAlgorithmType.fromId(it) }
+        .stateIn(viewModelScope, SharingStarted.Lazily, BodyAlgorithmType.COMMERCIAL)
+
+    /**
+     * 保存用户选择的体成分算法偏好
+     */
+    fun selectBodyAlgorithm(algorithm: BodyAlgorithmType) {
+        viewModelScope.launch {
+            preferenceManager.saveSelectedBodyAlgorithm(algorithm.id)
+            BodyAlgorithm.currentAlgorithm = algorithm
+            AppLogger.i("ProfileVM", "已切换体成分算法为: ${algorithm.displayName} (${algorithm.id})")
         }
     }
 

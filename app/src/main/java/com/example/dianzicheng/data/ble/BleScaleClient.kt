@@ -339,6 +339,8 @@ class BleScaleClient(private val context: Context) {
             name.startsWith("C08", ignoreCase = true) ||
             name.startsWith("C09", ignoreCase = true) ||
             name.startsWith("C10", ignoreCase = true) ||
+            name.contains("志高", ignoreCase = true) ||
+            name.contains("CHIGO", ignoreCase = true) ||
             name.contains("合泰", ignoreCase = true)
         } == true
         if (nameMatched) return true

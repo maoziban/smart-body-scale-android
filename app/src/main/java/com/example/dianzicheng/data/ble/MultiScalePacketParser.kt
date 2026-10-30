@@ -244,7 +244,9 @@ object MultiScalePacketParser {
                 name.contains("薄荷", ignoreCase = true) ||
                 name.contains("Fitdays", ignoreCase = true) ||
                 name.contains("Senssun", ignoreCase = true) ||
-                name.contains("香山", ignoreCase = true)
+                name.contains("香山", ignoreCase = true) ||
+                name.contains("志高", ignoreCase = true) ||
+                name.contains("CHIGO", ignoreCase = true)
             } == true
 
             val hasScaleService = serviceUuidStrings.any { u ->

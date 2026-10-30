@@ -60,11 +60,11 @@ enum class ScaleModel(
     ),
     OKOK_CHIPSEA(
         id = "OKOK_CHIPSEA",
-        displayName = "OKOK / 芯海科技方案体脂秤",
-        brand = "OKOK / 芯海科技",
+        displayName = "OKOK / 芯海科技方案 (含志高/康佳等)",
+        brand = "OKOK / 芯海科技 / 志高",
         category = "主流方案",
-        description = "芯海芯片常见 0x10 / 0xCF 协议帧与 0xFFF0 / 0xFFE0 透传服务",
-        wakeGuidance = "请踩秤点亮屏幕，蓝牙广播名称通常包含 OKOK、Chipsea 或 CS- 开头",
+        description = "芯海芯片常见 0x10 / 0xCF 协议帧与 0xFFF0 / 0xFFE0 透传服务（志高、康佳、奥克斯等贴牌秤常用）",
+        wakeGuidance = "请踩秤点亮屏幕，蓝牙广播名称通常包含 OKOK、Chipsea、CHIGO、志高 或 CS- 开头",
         protocolName = "OKOK/Chipsea"
     ),
     SENSSUN(

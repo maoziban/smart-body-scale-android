@@ -55,6 +55,9 @@ class PreferenceManager(private val context: Context) {
     /** 用户手动选择的体脂秤型号 ID（如 "BOOHEE_YOLANDA", "XIAOMI_SCALE_2", 默认为 "AUTO"） */
     private val SELECTED_SCALE_MODEL = stringPreferencesKey("selected_scale_model")
 
+    /** 用户手动选择的体成分算法 ID（如 "COMMERCIAL", "ACADEMIC", "LEGACY"，默认为 "COMMERCIAL"） */
+    private val SELECTED_BODY_ALGORITHM = stringPreferencesKey("selected_body_algorithm")
+
     // ── 读取操作（Flow） ─────────────────────────────────────────────────────
 
     /** 是否已完成设备配对，默认 false */
@@ -64,6 +67,10 @@ class PreferenceManager(private val context: Context) {
     /** 用户手动选择的体脂秤型号 ID，默认为 "AUTO" */
     val selectedScaleModel: Flow<String> = context.dataStore.data
         .map { preferences -> preferences[SELECTED_SCALE_MODEL] ?: "AUTO" }
+
+    /** 用户手动选择的体成分算法 ID，默认为 "COMMERCIAL" */
+    val selectedBodyAlgorithm: Flow<String> = context.dataStore.data
+        .map { preferences -> preferences[SELECTED_BODY_ALGORITHM] ?: "COMMERCIAL" }
 
     /** 已配对的蓝牙 MAC 地址，未配对时为 null */
     val pairedMac: Flow<String?> = context.dataStore.data
@@ -131,6 +138,13 @@ class PreferenceManager(private val context: Context) {
     suspend fun saveSelectedScaleModel(modelId: String) {
         context.dataStore.edit { preferences ->
             preferences[SELECTED_SCALE_MODEL] = modelId
+        }
+    }
+
+    /** 保存用户手动选择的体成分算法 ID */
+    suspend fun saveSelectedBodyAlgorithm(algorithmId: String) {
+        context.dataStore.edit { preferences ->
+            preferences[SELECTED_BODY_ALGORITHM] = algorithmId
         }
     }
 

@@ -33,6 +33,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import com.example.dianzicheng.domain.BodyAlgorithmType
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
@@ -57,6 +58,8 @@ fun ProfileContent(
     pairedDeviceName: String? = null,
     selectedScaleModel: ScaleModel = ScaleModel.AUTO,
     onSelectScaleModel: (ScaleModel) -> Unit = {},
+    selectedBodyAlgorithm: BodyAlgorithmType = BodyAlgorithmType.COMMERCIAL,
+    onSelectBodyAlgorithm: (BodyAlgorithmType) -> Unit = {},
     healthConnectEnabled: Boolean,
     onToggleHealthConnect: (Boolean) -> Unit,
     onRequestHealthConnectPermissions: () -> Unit,
@@ -84,6 +87,7 @@ fun ProfileContent(
     var showLogDialog by remember { mutableStateOf(false) }
     var showUnpairConfirmDialog by remember { mutableStateOf(false) }
     var showModelDialog by remember { mutableStateOf(false) }
+    var showAlgorithmDialog by remember { mutableStateOf(false) }
     var memberToDelete by remember { mutableStateOf<FamilyMember?>(null) }
 
     val dateFormat = remember { SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()) }
@@ -405,6 +409,16 @@ fun ProfileContent(
                         color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
                     )
                     SettingsItem(
+                        title = "体成分计算算法",
+                        subtitle = "${selectedBodyAlgorithm.displayName} · 点击切换模型",
+                        icon = Icons.Default.Calculate,
+                        onClick = { showAlgorithmDialog = true }
+                    )
+                    HorizontalDivider(
+                        modifier = Modifier.padding(horizontal = 16.dp),
+                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+                    )
+                    SettingsItem(
                         title = "查看运行日志",
                         subtitle = if (logEntries.isEmpty()) "暂无日志" else "共 ${logEntries.size} 条记录",
                         icon = Icons.AutoMirrored.Filled.Article,
@@ -527,6 +541,14 @@ fun ProfileContent(
             currentModel = selectedScaleModel,
             onModelSelected = onSelectScaleModel,
             onDismiss = { showModelDialog = false }
+        )
+    }
+
+    if (showAlgorithmDialog) {
+        SelectBodyAlgorithmDialog(
+            currentAlgorithm = selectedBodyAlgorithm,
+            onAlgorithmSelected = onSelectBodyAlgorithm,
+            onDismiss = { showAlgorithmDialog = false }
         )
     }
 }
@@ -980,6 +1002,7 @@ fun ProfileScreen(
     val pairedMac by viewModel.pairedMac.collectAsState()
     val pairedDeviceName by viewModel.pairedDeviceName.collectAsState()
     val selectedScaleModel by viewModel.selectedScaleModel.collectAsState()
+    val selectedBodyAlgorithm by viewModel.selectedBodyAlgorithm.collectAsState()
 
     val permissionLauncher = rememberLauncherForActivityResult(
         contract = PermissionController.createRequestPermissionResultContract()
@@ -1008,6 +1031,8 @@ fun ProfileScreen(
         pairedDeviceName = pairedDeviceName,
         selectedScaleModel = selectedScaleModel,
         onSelectScaleModel = { viewModel.selectScaleModel(it) },
+        selectedBodyAlgorithm = selectedBodyAlgorithm,
+        onSelectBodyAlgorithm = { viewModel.selectBodyAlgorithm(it) },
         healthConnectEnabled = healthConnectEnabled,
         onToggleHealthConnect = { enabled ->
             viewModel.setHealthConnectEnabled(enabled)

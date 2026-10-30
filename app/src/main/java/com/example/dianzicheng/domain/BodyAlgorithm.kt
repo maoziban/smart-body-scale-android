@@ -7,14 +7,25 @@ import com.example.dianzicheng.data.local.AppLogger
 /**
  * 身体成分计算算法（BIA - 生物电阻抗分析）。
  *
- * 根据体重、阻抗、性别、身高、年龄计算体脂率、肌肉量、水分、蛋白质、骨量等指标。
+ * 支持三套算法模型自由切换（详见 [BodyAlgorithmType]）：
+ * 1. COMMERCIAL：商业对标模式（默认推荐），对标小米 / OKOK / 芯海官方 App，贴近足底硬件标定
+ * 2. ACADEMIC：日内瓦物理模型，基于 Kyle & Kushner 阻抗指数 (H²/Z) 严谨物理推导
+ * 3. LEGACY：经典线性加权模型，兼容旧版本简易累加公式
  *
- * 注意：
- * - 当 [impedanceOhm] 为 0.0 时，表示本次未测得有效阻抗（用户未赤脚称重），
+ * 核心保障：
+ * - 质量守恒保证：脂肪质量 + 肌肉质量 + 骨量质量恒等于总重量（100% 物理守恒，杜绝指标加和不等于体重）
+ * - 赤脚检测保障：当 [impedanceOhm] 为 0.0 时，表示本次未测得有效阻抗（用户未赤脚称重），
  *   所有 BIA 相关指标均返回 0.0，不使用估算回退，避免误导用户
  * - BMI 始终计算，无论是否有阻抗数据
  */
 object BodyAlgorithm {
+
+    /**
+     * 当前全局生效的算法类型，默认 COMMERCIAL 商业对标模式。
+     * 可在应用启动时或用户在设置中选择后动态修改。
+     */
+    @Volatile
+    var currentAlgorithm: BodyAlgorithmType = BodyAlgorithmType.COMMERCIAL
 
     /**
      * 计算单次称重的完整身体成分数据。
@@ -24,6 +35,7 @@ object BodyAlgorithm {
      * @param sex             性别（MALE / FEMALE），影响体脂率计算系数
      * @param heightCm        身高（厘米），用于计算 BMI 和作为 BIA 辅助参数
      * @param birthDateEpochMs 出生日期（Unix 毫秒时间戳），用于推算年龄
+     * @param algorithmType   指定使用的计算算法，若不传则使用当前全局配置 [currentAlgorithm]
      * @return 完整的 [BodyMeasurement] 对象；id 为空字符串，由 repository 层赋值
      */
     fun calculate(
@@ -31,7 +43,8 @@ object BodyAlgorithm {
         impedanceOhm: Double,
         sex: Sex,
         heightCm: Double,
-        birthDateEpochMs: Long
+        birthDateEpochMs: Long,
+        algorithmType: BodyAlgorithmType = currentAlgorithm
     ): BodyMeasurement {
         // 限制身高在生理合理范围（50~250cm），彻底杜绝 heightCm <= 0 时的除以零或 NaN 异常
         val safeHeightCm = heightCm.coerceIn(50.0, 250.0)
@@ -43,40 +56,87 @@ object BodyAlgorithm {
         // 否则所有 BIA 指标保持 0.0（不使用估算回退）
         val hasImpedance = impedanceOhm > 0.0 && weightKg >= 3.0
 
-        // ── 体脂率（%）─────────────────────────────────────────────────────
-        // 使用 BIA 公式：综合 BMI、年龄、阻抗三个维度加权计算
-        val fat = if (hasImpedance) {
-            val biaFat = if (sex == Sex.MALE) {
-                0.18 * bmi + 0.012 * age + 0.018 * impedanceOhm - 3.2
-            } else {
-                0.26 * bmi + 0.011 * age + 0.020 * impedanceOhm - 2.5
+        var fat = 0.0
+        var water = 0.0
+        var bone = 0.0
+        var protein = 0.0
+        var muscle = 0.0
+
+        if (hasImpedance) {
+            when (algorithmType) {
+                BodyAlgorithmType.COMMERCIAL -> {
+                    // ── 方案一：商业对标模式（小米 / 芯海 / openScale 硬件标定） ──────
+                    val h = heightM
+                    val baseLbm = (h * 9.058) * h + weightKg * 0.32 + 12.226 - impedanceOhm * 0.0068 - age * 0.0542
+                    val rawLbm = if (sex == Sex.MALE) baseLbm else baseLbm * 0.842
+                    val boundedLbm = rawLbm.coerceIn(weightKg * 0.35, weightKg * 0.95)
+
+                    val rawFat = (weightKg - boundedLbm) / weightKg * 100.0
+                    fat = rawFat.coerceIn(5.0, 55.0)
+
+                    // 质量守恒修正：确保生效的瘦体重与截断后的体脂率严格一致（脂肪质量 + 瘦体重 = 总体重）
+                    val effectiveLbm = weightKg * (1.0 - fat / 100.0)
+
+                    // 去脂组织中约 72.5% 为水分（Pace & Rathbun 恒量）
+                    val waterKg = effectiveLbm * 0.725
+                    water = (waterKg / weightKg * 100.0).coerceIn(35.0, 75.0)
+
+                    // 骨矿物质含量与去脂体重呈比例
+                    val boneRatio = if (sex == Sex.MALE) 0.052 else 0.046
+                    bone = (effectiveLbm * boneRatio).coerceIn(1.2, 5.5)
+
+                    // 肌肉量 = 去脂体重 - 骨量（各成分精确相加等于总体重）
+                    muscle = max(0.0, effectiveLbm - bone)
+
+                    // 蛋白质占去脂体重的约 19.5%
+                    val proteinKg = effectiveLbm * 0.195
+                    protein = (proteinKg / weightKg * 100.0).coerceIn(10.0, 24.0)
+                }
+
+                BodyAlgorithmType.ACADEMIC -> {
+                    // ── 方案二：学术物理日内瓦模型（Kyle & Kushner H²/Z 阻抗指数） ───
+                    val index = (safeHeightCm * safeHeightCm) / impedanceOhm
+                    // 足底双极秤电极无相角容抗测量，基于 +5.85Ω 容抗补偿修正女性常数至 +1.75，避免身材苗条女性体脂严重虚高
+                    val rawFfm = if (sex == Sex.MALE) {
+                        0.439 * index + 0.354 * weightKg + 0.052 * age + 6.47
+                    } else {
+                        0.412 * index + 0.336 * weightKg + 0.048 * age + 1.75
+                    }
+                    val boundedFfm = rawFfm.coerceIn(weightKg * 0.35, weightKg * 0.95)
+
+                    val rawFat = (weightKg - boundedFfm) / weightKg * 100.0
+                    fat = rawFat.coerceIn(5.0, 55.0)
+
+                    // 质量守恒修正：去脂组织（FFM）与体脂率完全自洽
+                    val effectiveFfm = weightKg * (1.0 - fat / 100.0)
+
+                    // 经典生物化学：去脂组织（FFM）恒定含水量约为 73.2%
+                    val waterKg = effectiveFfm * 0.732
+                    water = (waterKg / weightKg * 100.0).coerceIn(35.0, 75.0)
+
+                    val boneRatio = if (sex == Sex.MALE) 0.052 else 0.046
+                    bone = (effectiveFfm * boneRatio).coerceIn(1.2, 5.5)
+                    muscle = max(0.0, effectiveFfm - bone)
+
+                    val proteinKg = effectiveFfm * 0.195
+                    protein = (proteinKg / weightKg * 100.0).coerceIn(10.0, 24.0)
+                }
+
+                BodyAlgorithmType.LEGACY -> {
+                    // ── 方案三：旧版简易线性加权回归模型 ────────────────────────────
+                    val biaFat = if (sex == Sex.MALE) {
+                        0.18 * bmi + 0.012 * age + 0.018 * impedanceOhm - 3.2
+                    } else {
+                        0.26 * bmi + 0.011 * age + 0.020 * impedanceOhm - 2.5
+                    }
+                    fat = biaFat.coerceIn(5.0, 55.0)
+                    water = (69.7 - fat * 0.55).coerceIn(35.0, 75.0)
+                    bone = (weightKg * (if (sex == Sex.MALE) 0.047 else 0.040)).coerceIn(1.2, 5.5)
+                    protein = (16.0 + (water - 50.0) * 0.12).coerceIn(10.0, 24.0)
+                    muscle = max(weightKg * (1 - fat / 100.0) - bone, 0.0)
+                }
             }
-            biaFat.coerceIn(5.0, 55.0) // 限制在合理生理范围内
-        } else {
-            0.0
         }
-
-        // ── 体内水分率（%）──────────────────────────────────────────────────
-        // 与体脂率负相关：体脂越高，水分占比越低
-        val water = if (hasImpedance && fat > 0) (69.7 - fat * 0.55).coerceIn(35.0, 75.0) else 0.0
-
-        // ── 骨量（公斤）──────────────────────────────────────────────────────
-        // 按性别不同比例估算，男性骨密度略高于女性
-        val bone = if (hasImpedance && fat > 0)
-            (weightKg * (if (sex == Sex.MALE) 0.047 else 0.040)).coerceIn(1.5, 5.5)
-        else 0.0
-
-        // ── 蛋白质率（%）──────────────────────────────────────────────────────
-        // 与水分正相关，水分越高通常蛋白质比例也越高
-        val protein = if (hasImpedance && fat > 0)
-            (16.0 + (water - 50.0) * 0.12).coerceIn(10.0, 24.0)
-        else 0.0
-
-        // ── 肌肉量（公斤）──────────────────────────────────────────────────
-        // 去脂体重扣除骨量即为肌肉量，保证不低于 0
-        val muscle = if (hasImpedance && fat > 0)
-            max(weightKg * (1 - fat / 100.0) - bone, 0.0)
-        else 0.0
 
         return BodyMeasurement(
             id = "", // id 由 ScaleRepository 根据 sessionId 赋值，此处留空
