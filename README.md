@@ -1,9 +1,10 @@
 # 智能体脂秤 Android 客户端 (Smart Body Scale Android)
 
-这是一个基于 Android 平台开发的**智能体脂秤客户端应用**。项目采用现代化的 **Jetpack Compose** 声明式 UI 框架构建，通过 **低功耗蓝牙 (BLE)** 与体脂秤进行实时数据通信，解析专有硬件协议，利用 BIA（生物电阻抗分析）算法计算并记录用户的各项身体指标（体重、体脂率、BMI、水分、肌肉量、蛋白质、骨量等）。
+这是一个基于 Android 平台开发的**智能体脂秤客户端应用**。
 
-ios版项目地址https://github.com/maoziban/smart-body-scale-IOS
 
+ios版项目地址https://github.com/maoziban/smart-body-scale-IOS已经替更酷安上有其他大佬更新 @Xuanlprk 地址
+以下内容都是ai生成
 ---
 
 ## 🌟 功能特性
