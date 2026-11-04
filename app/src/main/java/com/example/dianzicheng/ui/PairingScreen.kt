@@ -172,11 +172,6 @@ fun PairingScreen(
                             tint = if (uiState.selectedScaleModel != ScaleModel.AUTO) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
                         )
                     }
-                    if (onNavigateBack == null) {
-                        TextButton(onClick = onPairingComplete) {
-                            Text("跳过", fontWeight = FontWeight.SemiBold)
-                        }
-                    }
                 }
             )
         },

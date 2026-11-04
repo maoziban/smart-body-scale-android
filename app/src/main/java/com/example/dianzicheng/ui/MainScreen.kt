@@ -35,6 +35,13 @@ fun MainScreen(
     val routes = listOf("dashboard", "history", "profile")
     val icons = listOf(Icons.Default.Home, Icons.Default.DateRange, Icons.Default.Person)
 
+    //触发首次弹窗操作
+    FirstRunProfileOnboarding(
+        onSave = { name, sex, heightCm, birthDateEpochMs ->
+            profileViewModel.upsertPrimaryMember(name, sex, heightCm, birthDateEpochMs)
+        }
+    )
+
     if (isPairingComplete == null) {
         // DataStore 异步读取中，渲染空背景，杜绝因初值 false 瞬时挂载 PairingScreen 并误触发 startPairingScan()
         Surface(
