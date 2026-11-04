@@ -3,7 +3,8 @@
 这是一个基于 Android 平台开发的**智能体脂秤客户端应用**。
 
 
-ios版项目地址https://github.com/maoziban/smart-body-scale-IOS已经替更酷安上有其他大佬更新 @Xuanlprk 地址
+ios版项目地址https://github.com/maoziban/smart-body-scale-IOS
+ios已经停更酷安上有其他大佬更新 @Xuanlprk
 以下内容都是ai生成
 ---
 
