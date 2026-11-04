@@ -1125,6 +1125,92 @@ class BleScaleClient(private val context: Context) {
      */
     private var inactivityRunnable: Runnable? = null
 
+    /** 当前 QN 会话的 protocolType；为 null 表示尚未收到 0x12 / 0x14 握手帧。 */
+    private var qnProtocolType: Int? = null
+
+    /** 本次测量是否已发送过 0x1F 完成确认，避免对重复的稳定帧反复回复。 */
+    private var qnFinishAckSent = false
+
+    /**
+     * 向 QN 秤的写入特征（FFE3 / FFE2 / FFF2）写入一帧数据。
+     *
+     * @return 是否成功发起写入。
+     */
+    private fun writeQnFrame(frame: ByteArray, label: String): Boolean {
+        val gatt = bluetoothGatt ?: return false
+        for (service in gatt.services) {
+            if (service.uuid !in QnProtocol.SERVICE_UUIDS) continue
+            val target = QnProtocol.WRITE_UUID_CANDIDATES
+                .firstNotNullOfOrNull { service.getCharacteristic(it) } ?: continue
+            val props = target.properties
+            val writeType = if (props and BluetoothGattCharacteristic.PROPERTY_WRITE != 0) {
+                BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
+            } else {
+                BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+            }
+            AppLogger.i(TAG, "QN ACK [$label] -> ${target.uuid}: ${frame.joinToString(" ") { "%02X".format(it) }}")
+            val ok = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                gatt.writeCharacteristic(target, frame, writeType) == android.bluetooth.BluetoothStatusCodes.SUCCESS
+            } else {
+                target.writeType = writeType
+                @Suppress("DEPRECATION")
+                target.value = frame
+                @Suppress("DEPRECATION")
+                gatt.writeCharacteristic(target)
+            }
+            if (!ok) AppLogger.w(TAG, "QN ACK [$label] 写入发起失败")
+            return ok
+        }
+        AppLogger.w(TAG, "QN ACK [$label] 未找到可写特征 (FFE3/FFE2/FFF2)")
+        return false
+    }
+
+    /**
+     * 处理 QN（薄荷健康 / 轻牛 / 沃莱）协议帧并回复 ACK。
+     *
+     * @return Pair(first = 该帧是否已被 QN 逻辑消费, second = 0x10 体重帧解析结果)；
+     *         控制帧 (0x12 / 0x14) 仅回复 ACK，不产生测量值。
+     */
+    private fun handleQnFrame(data: ByteArray, charUuid: String, hexStr: String): Pair<Boolean, MultiScalePacketParser.ParsedScaleData?> {
+        val none = Pair(false, null as MultiScalePacketParser.ParsedScaleData?)
+        if (preferredModel != ScaleModel.AUTO && preferredModel != ScaleModel.BOOHEE_YOLANDA &&
+            preferredModel != ScaleModel.OTHER_GENERIC) return none
+        if (!QnProtocol.isNotifyUuid(charUuid) || !QnProtocol.isQnFrame(data)) return none
+
+        val cmd = data[0].toInt() and 0xFF
+        val proto = QnProtocol.protocolTypeOf(data)
+        when (cmd) {
+            QnProtocol.CMD_CONFIG_REQUEST -> {
+                AppLogger.i(TAG, "收到 QN 配置请求 0x12: $hexStr，回复 0x13")
+                qnProtocolType = proto
+                qnFinishAckSent = false
+                writeQnFrame(QnProtocol.buildConfigAck(proto), "0x13")
+                return Pair(true, null)
+            }
+            QnProtocol.CMD_READY -> {
+                AppLogger.i(TAG, "收到 QN 就绪帧 0x14: $hexStr，回复 0x20 时间同步")
+                qnProtocolType = proto
+                writeQnFrame(QnProtocol.buildTimeSync(proto), "0x20")
+                return Pair(true, null)
+            }
+            QnProtocol.CMD_WEIGHT -> {
+                // 仅在已完成 QN 握手或用户明确选择薄荷/沃莱时才按 QN 体重帧解析，避免与 OKOK 等 0x10 帧混淆
+                if (qnProtocolType == null && preferredModel != ScaleModel.BOOHEE_YOLANDA) return none
+                val result = QnProtocol.parseWeightFrame(data) ?: return none
+                if (result.isStable && result.weightKg >= 3.0) {
+                    if (!qnFinishAckSent) {
+                        qnFinishAckSent = true
+                        writeQnFrame(QnProtocol.buildFinishAck(qnProtocolType ?: proto), "0x1F")
+                    }
+                } else {
+                    qnFinishAckSent = false
+                }
+                return Pair(true, result)
+            }
+        }
+        return none
+    }
+
     /**
      * 处理从 GATT 特征通知中接收到的原始数据包。
      *
@@ -1141,7 +1227,10 @@ class BleScaleClient(private val context: Context) {
     private fun handleIncomingData(data: ByteArray, charUuid: String) {
         // 将原始数据格式化为十六进制字符串打印，记录原始蓝牙数据
         val hexStr = data.joinToString(" ") { "%02X".format(it) }
-        val scaleResult = MultiScalePacketParser.parseNotification(data, charUuid, preferredModel)
+        // 薄荷健康 / 轻牛 / 沃莱 (QN) 协议：必须对 0x12 / 0x14 / 0x10 帧回复 ACK，秤才会继续推送数据
+        val qnResult = handleQnFrame(data, charUuid, hexStr)
+        val scaleResult = if (qnResult.first) qnResult.second
+            else MultiScalePacketParser.parseNotification(data, charUuid, preferredModel)
 
         val parsedDetails = buildString {
             if (scaleResult != null) {
@@ -1290,6 +1379,8 @@ class BleScaleClient(private val context: Context) {
                 }
                 pendingSubscribeList.clear()
                 pendingSubscribeIndex = 0
+                qnProtocolType = null
+                qnFinishAckSent = false
 
                 // 区分是"正常测量完成后的设备休眠断开"还是"连接发起阶段的握手失败"
                 val wasPreviouslyConnected = _connectionState.value == ConnectionState.CONNECTED ||

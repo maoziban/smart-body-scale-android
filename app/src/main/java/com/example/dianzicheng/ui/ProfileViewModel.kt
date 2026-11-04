@@ -162,6 +162,55 @@ class ProfileViewModel(
         }
     }
 
+    /**
+     * 修改家庭成员资料（姓名/性别/身高/年龄等），并重算该成员名下的全部历史记录。
+     *
+     * 历史记录的年龄按各自称重时刻推算，原始体重/阻抗/时间不变；每条记录会记录重算次数与时间。
+     */
+    fun updateMember(member: FamilyMember) {
+        viewModelScope.launch {
+            val old = members.value.firstOrNull { it.id == member.id }
+            repository.saveMember(member)
+            val changedProfile = old == null || old.sex != member.sex ||
+                old.heightCm != member.heightCm || old.birthDateEpochMs != member.birthDateEpochMs ||
+                old.name != member.name
+            if (!changedProfile) return@launch
+            val repo = scaleRepository ?: return@launch
+            try {
+                val n = repo.recalculateForMember(member, selectedBodyAlgorithm.value)
+                AppLogger.i("ProfileVM", "成员 ${member.name} 资料已更新，已重算 $n 条历史记录")
+                _statusMessage.value = "已更新 ${member.name}，并重算 $n 条历史记录"
+            } catch (e: Exception) {
+                AppLogger.e("ProfileVM", "成员资料更新后重算失败: ${e.message}")
+                _statusMessage.value = "资料已保存，但历史重算失败：${e.localizedMessage}"
+            }
+        }
+    }
+
+    /**
+     * 以当前算法与各成员最新资料重算全部历史记录（手动触发，例如切换算法之后）。
+     */
+    fun recalculateAllHistory() {
+        val repo = scaleRepository ?: run {
+            _statusMessage.value = "无法访问数据库"
+            return
+        }
+        viewModelScope.launch {
+            _isOperating.value = true
+            try {
+                val algorithm = selectedBodyAlgorithm.value
+                val n = repo.recalculateAll(algorithm)
+                AppLogger.i("ProfileVM", "已按 ${algorithm.displayName} 重算 $n 条历史记录")
+                _statusMessage.value = "已按「${algorithm.displayName}」重算 $n 条历史记录"
+            } catch (e: Exception) {
+                AppLogger.e("ProfileVM", "历史重算失败: ${e.message}")
+                _statusMessage.value = "历史重算失败：${e.localizedMessage}"
+            } finally {
+                _isOperating.value = false
+            }
+        }
+    }
+
     /** 从数据库删除指定家庭成员 */
     fun deleteMember(member: FamilyMember) {
         viewModelScope.launch { repository.deleteMember(member) }
@@ -203,10 +252,10 @@ class ProfileViewModel(
         }
         viewModelScope.launch {
             if (!hcManager.isAvailable()) {
-                _statusMessage.value = "当前设备不支持 Health Connect，请升级系统或安装 Health Connect 应用"
+                _statusMessage.value = hcManager.unavailableReason() ?: "当前设备不支持 Health Connect"
                 return@launch
             }
-            if (!hcManager.hasAllPermissions()) {
+            if (!hcManager.hasWritePermissions()) {
                 _statusMessage.value = "请先在上方开启\"同步至系统健康\"并授予权限，再进行批量同步"
                 return@launch
             }

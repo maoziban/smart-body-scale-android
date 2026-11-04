@@ -9,11 +9,13 @@ import androidx.health.connect.client.HealthConnectClient
 import androidx.health.connect.client.permission.HealthPermission
 import androidx.health.connect.client.records.BodyFatRecord
 import androidx.health.connect.client.records.WeightRecord
+import androidx.health.connect.client.records.metadata.Device
 import androidx.health.connect.client.records.metadata.Metadata
 import androidx.health.connect.client.request.ReadRecordsRequest
 import androidx.health.connect.client.time.TimeRangeFilter
 import androidx.health.connect.client.units.Mass
 import androidx.health.connect.client.units.Percentage
+import com.example.dianzicheng.data.local.AppLogger
 import com.example.dianzicheng.domain.BodyMeasurement
 import java.time.Instant
 import java.time.ZoneOffset
@@ -35,14 +37,59 @@ class HealthConnectManager(private val context: Context) {
         HealthPermission.getReadPermission(BodyFatRecord::class)
     )
 
+    /** 写入所需的最小权限集合：用户在系统弹窗中仅授予写权限、拒绝读权限时，同步仍应正常工作。 */
+    private val writePermissions = setOf(
+        HealthPermission.getWritePermission(WeightRecord::class),
+        HealthPermission.getWritePermission(BodyFatRecord::class)
+    )
+
     fun isAvailable(): Boolean {
         return HealthConnectClient.getSdkStatus(context) == HealthConnectClient.SDK_AVAILABLE
+    }
+
+    /** 返回不可用原因（用于提示用户），可用时返回 null。 */
+    fun unavailableReason(): String? = when (HealthConnectClient.getSdkStatus(context)) {
+        HealthConnectClient.SDK_AVAILABLE -> null
+        HealthConnectClient.SDK_UNAVAILABLE_PROVIDER_UPDATE_REQUIRED ->
+            "Health Connect 版本过旧，请先在应用商店更新 Health Connect"
+        else -> "当前设备未安装或不支持 Health Connect"
     }
 
     suspend fun hasAllPermissions(): Boolean {
         val client = healthConnectClient ?: return false
         val granted = client.permissionController.getGrantedPermissions()
         return granted.containsAll(permissions)
+    }
+
+    /** 是否已具备写入体重/体脂的权限（同步写入只需要此项，不要求读权限）。 */
+    suspend fun hasWritePermissions(): Boolean {
+        val client = healthConnectClient ?: return false
+        return try {
+            client.permissionController.getGrantedPermissions().containsAll(writePermissions)
+        } catch (e: Exception) {
+            AppLogger.e("HealthConnect", "查询权限失败: ${e.message}")
+            false
+        }
+    }
+
+    /**
+     * 构造带稳定 clientRecordId 的元数据，并标记数据来自体重秤设备。
+     *
+     * clientRecordVersion 取当前时间：相同 clientRecordId 的记录只有在新版本号更大时才会覆盖旧记录，
+     * 默认版本号 0 会导致重算后再次同步被 Health Connect 静默忽略。
+     */
+    private fun buildMetadata(prefix: String, id: String): Metadata {
+        val device = Device(type = Device.TYPE_SCALE, manufacturer = "BodyScale", model = "BLE")
+        return if (id.isNotBlank()) {
+            Metadata(
+                clientRecordId = "${prefix}_$id",
+                clientRecordVersion = System.currentTimeMillis(),
+                device = device,
+                recordingMethod = Metadata.RECORDING_METHOD_ACTIVELY_RECORDED
+            )
+        } else {
+            Metadata(device = device, recordingMethod = Metadata.RECORDING_METHOD_ACTIVELY_RECORDED)
+        }
     }
 
     suspend fun writeMeasurement(measurement: BodyMeasurement): Boolean {
@@ -55,11 +102,7 @@ class HealthConnectManager(private val context: Context) {
             val instant = Instant.ofEpochMilli(measurement.measuredAtEpochMs)
             val zoneOffset = ZoneOffset.systemDefault().rules.getOffset(instant)
 
-            val weightMetadata = if (measurement.id.isNotBlank()) {
-                Metadata(clientRecordId = "weight_${measurement.id}")
-            } else {
-                Metadata()
-            }
+            val weightMetadata = buildMetadata("weight", measurement.id)
 
             val weightRecord = WeightRecord(
                 weight = Mass.kilograms(measurement.weightKg),
@@ -71,11 +114,7 @@ class HealthConnectManager(private val context: Context) {
             val records = mutableListOf<androidx.health.connect.client.records.Record>(weightRecord)
 
             if (measurement.bodyFatPct > 0.0) {
-                val fatMetadata = if (measurement.id.isNotBlank()) {
-                    Metadata(clientRecordId = "fat_${measurement.id}")
-                } else {
-                    Metadata()
-                }
+                val fatMetadata = buildMetadata("fat", measurement.id)
                 val fatRecord = BodyFatRecord(
                     percentage = Percentage(measurement.bodyFatPct),
                     time = instant,
@@ -87,9 +126,11 @@ class HealthConnectManager(private val context: Context) {
 
             client.insertRecords(records)
             Log.d("HealthConnectManager", "Successfully written measurement to Health Connect")
+            AppLogger.i("HealthConnect", "已写入 Health Connect: ${"%.2f".format(measurement.weightKg)}kg, 体脂 ${"%.1f".format(measurement.bodyFatPct)}%")
             true
         } catch (e: Exception) {
             Log.e("HealthConnectManager", "Failed to write measurement to Health Connect", e)
+            AppLogger.e("HealthConnect", "写入 Health Connect 失败: ${e.javaClass.simpleName}: ${e.message}")
             false
         }
     }
@@ -182,7 +223,7 @@ class HealthConnectManager(private val context: Context) {
      */
     suspend fun batchWriteMeasurements(measurements: List<BodyMeasurement>): Pair<Int, Int> {
         val client = healthConnectClient ?: return Pair(0, measurements.size)
-        if (!hasAllPermissions()) return Pair(0, measurements.size)
+        if (!hasWritePermissions()) return Pair(0, measurements.size)
 
         var success = 0
         var failed = 0
@@ -194,11 +235,7 @@ class HealthConnectManager(private val context: Context) {
                 batch.forEach { measurement ->
                     val instant = Instant.ofEpochMilli(measurement.measuredAtEpochMs)
                     val zoneOffset = ZoneOffset.systemDefault().rules.getOffset(instant)
-                    val weightMetadata = if (measurement.id.isNotBlank()) {
-                        Metadata(clientRecordId = "weight_${measurement.id}")
-                    } else {
-                        Metadata()
-                    }
+                    val weightMetadata = buildMetadata("weight", measurement.id)
                     records.add(
                         WeightRecord(
                             weight = Mass.kilograms(measurement.weightKg),
@@ -208,11 +245,7 @@ class HealthConnectManager(private val context: Context) {
                         )
                     )
                     if (measurement.bodyFatPct > 0.0) {
-                        val fatMetadata = if (measurement.id.isNotBlank()) {
-                            Metadata(clientRecordId = "fat_${measurement.id}")
-                        } else {
-                            Metadata()
-                        }
+                        val fatMetadata = buildMetadata("fat", measurement.id)
                         records.add(
                             BodyFatRecord(
                                 percentage = Percentage(measurement.bodyFatPct),
@@ -228,6 +261,7 @@ class HealthConnectManager(private val context: Context) {
                 Log.d("HealthConnectManager", "Batch written ${batch.size} records")
             } catch (e: Exception) {
                 Log.e("HealthConnectManager", "Batch write failed", e)
+                AppLogger.e("HealthConnect", "批量写入失败: ${e.javaClass.simpleName}: ${e.message}")
                 failed += batch.size
             }
         }

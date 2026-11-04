@@ -3,6 +3,7 @@ package com.example.dianzicheng.data.repository
 import com.example.dianzicheng.data.local.ScaleDao
 import com.example.dianzicheng.data.local.toDomain
 import com.example.dianzicheng.data.local.toEntity
+import com.example.dianzicheng.domain.BodyAlgorithmType
 import com.example.dianzicheng.domain.BodyMeasurement
 import com.example.dianzicheng.domain.FamilyMember
 import kotlinx.coroutines.flow.Flow
@@ -77,7 +78,8 @@ class ScaleRepository(private val dao: ScaleDao) {
                 impedanceOhm = measurement.impedanceOhm,
                 sex = memberToBind.sex,
                 heightCm = memberToBind.heightCm,
-                birthDateEpochMs = memberToBind.birthDateEpochMs
+                birthDateEpochMs = memberToBind.birthDateEpochMs,
+                measuredAtEpochMs = measurement.measuredAtEpochMs
             ).copy(
                 // 使用传入的 existingId 保证同次称量幂等写入，否则生成新 UUID
                 id = existingId ?: measurement.id.ifEmpty { UUID.randomUUID().toString() },
@@ -125,9 +127,11 @@ class ScaleRepository(private val dao: ScaleDao) {
             impedanceOhm = measurement.impedanceOhm,
             sex = member.sex,
             heightCm = member.heightCm,
-            birthDateEpochMs = member.birthDateEpochMs
+            birthDateEpochMs = member.birthDateEpochMs,
+            measuredAtEpochMs = measurement.measuredAtEpochMs
         ).copy(
             id = measurement.id,
+            recalcCount = measurement.recalcCount + (if (measurement.memberId != member.id) 1 else 0),
             measuredAtEpochMs = measurement.measuredAtEpochMs,
             memberId = member.id,
             memberNameSnapshot = member.name
@@ -136,6 +140,60 @@ class ScaleRepository(private val dao: ScaleDao) {
         // 同步更新成员参考体重
         dao.insertMember(member.copy(referenceWeightKg = measurement.weightKg).toEntity())
         return recalculated
+    }
+
+    /**
+     * 以成员当前资料（性别/身高/出生日期）和指定算法，重算该成员名下的全部历史记录。
+     *
+     * 年龄按每条记录的称重时刻推算；原始体重、阻抗、时间、成员绑定保持不变，
+     * 并记录重算次数与时间，便于追溯。无阻抗的记录仅刷新 BMI。
+     *
+     * @return 实际被更新的记录数
+     */
+    suspend fun recalculateForMember(member: FamilyMember, algorithm: BodyAlgorithmType): Int {
+        val list = dao.getAllMeasurementsList().filter { it.memberId == member.id }
+        return recalcList(list.map { it.toDomain() }, mapOf(member.id to member), algorithm)
+    }
+
+    /**
+     * 以各成员当前资料和指定算法重算全部历史记录（未绑定成员的记录跳过）。
+     *
+     * @return 实际被更新的记录数
+     */
+    suspend fun recalculateAll(algorithm: BodyAlgorithmType): Int {
+        val members = dao.getMembersList().map { it.toDomain() }.associateBy { it.id }
+        val list = dao.getAllMeasurementsList().map { it.toDomain() }
+        return recalcList(list, members, algorithm)
+    }
+
+    private suspend fun recalcList(
+        list: List<BodyMeasurement>,
+        members: Map<String, FamilyMember>,
+        algorithm: BodyAlgorithmType
+    ): Int {
+        val now = System.currentTimeMillis()
+        var changed = 0
+        for (m in list) {
+            val member = members[m.memberId ?: continue] ?: continue
+            val r = com.example.dianzicheng.domain.BodyAlgorithm.calculate(
+                weightKg = m.weightKg,
+                impedanceOhm = m.impedanceOhm,
+                sex = member.sex,
+                heightCm = member.heightCm,
+                birthDateEpochMs = member.birthDateEpochMs,
+                algorithmType = algorithm,
+                measuredAtEpochMs = m.measuredAtEpochMs
+            ).copy(
+                id = m.id,
+                memberId = m.memberId,
+                memberNameSnapshot = member.name,
+                recalcCount = m.recalcCount + 1,
+                lastRecalcAtEpochMs = now
+            )
+            dao.insertMeasurement(r.toEntity())
+            changed++
+        }
+        return changed
     }
 
     /**

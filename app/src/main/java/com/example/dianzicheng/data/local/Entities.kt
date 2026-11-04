@@ -1,5 +1,6 @@
 package com.example.dianzicheng.data.local
 
+import androidx.room.ColumnInfo
 import androidx.room.Entity
 import androidx.room.PrimaryKey
 import com.example.dianzicheng.domain.Sex
@@ -40,6 +41,11 @@ data class MemberEntity(
  * @param boneMassKg         骨量（公斤），无阻抗时为 0.0
  * @param memberId           关联的家庭成员 ID（外键），null 表示未绑定
  * @param memberNameSnapshot 保存时成员姓名快照，防止改名后历史混乱
+ * @param ageUsed            计算时采用的年龄（称重时刻）
+ * @param heightCmUsed       计算时采用的身高
+ * @param algorithmId        计算时采用的算法 ID
+ * @param recalcCount        重算次数
+ * @param lastRecalcAtEpochMs 最近一次重算时间
  */
 @Entity(tableName = "measurements")
 data class MeasurementEntity(
@@ -54,5 +60,10 @@ data class MeasurementEntity(
     val proteinPct: Double,
     val boneMassKg: Double,
     val memberId: String?,
-    val memberNameSnapshot: String?
+    val memberNameSnapshot: String?,
+    @ColumnInfo(defaultValue = "0") val ageUsed: Int = 0,
+    @ColumnInfo(defaultValue = "0") val heightCmUsed: Double = 0.0,
+    @ColumnInfo(defaultValue = "''") val algorithmId: String = "",
+    @ColumnInfo(defaultValue = "0") val recalcCount: Int = 0,
+    @ColumnInfo(defaultValue = "0") val lastRecalcAtEpochMs: Long = 0L
 )

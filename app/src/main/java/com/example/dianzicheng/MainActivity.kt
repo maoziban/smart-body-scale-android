@@ -82,7 +82,7 @@ class MainActivity : ComponentActivity() {
         database = Room.databaseBuilder(
             applicationContext,
             AppDatabase::class.java, "scale-db"
-        ).build()
+        ).addMigrations(AppDatabase.MIGRATION_1_2).build()
         
         bleClient = BleScaleClient(applicationContext)
         scaleRepository = ScaleRepository(database.scaleDao())

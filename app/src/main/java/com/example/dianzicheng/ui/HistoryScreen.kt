@@ -584,6 +584,24 @@ fun MeasurementDetailScreen(
                             DetailGridItem("电阻抗", if (measurement.impedanceOhm > 0.0) "${measurement.impedanceOhm.toInt()}Ω" else "未测出", modifier = Modifier.weight(1f))
                             Spacer(modifier = Modifier.weight(2f))
                         }
+                        if (measurement.ageUsed > 0 || measurement.algorithmId.isNotEmpty()) {
+                            HorizontalDivider(modifier = Modifier.padding(vertical = 16.dp))
+                            val algoName = com.example.dianzicheng.domain.BodyAlgorithmType.entries
+                                .firstOrNull { it.id == measurement.algorithmId }?.displayName ?: "未记录"
+                            Text(
+                                text = "计算依据：${measurement.ageUsed}岁 · ${measurement.heightCmUsed.toInt()}cm · $algoName",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.outline
+                            )
+                        }
+                        if (measurement.recalcCount > 0) {
+                            Text(
+                                text = "已重算 ${measurement.recalcCount} 次，最近：${dateFormat.format(Date(measurement.lastRecalcAtEpochMs))}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.outline,
+                                modifier = Modifier.padding(top = 4.dp)
+                            )
+                        }
                     }
                 }
             }

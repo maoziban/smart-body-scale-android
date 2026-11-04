@@ -55,7 +55,7 @@ class HistoryViewModel(
             val hc = healthConnectManager ?: return@launch
             try {
                 val enabled = prefs.healthConnectEnabled.first()
-                if (enabled && hc.hasAllPermissions()) {
+                if (enabled && hc.hasWritePermissions()) {
                     hc.deleteMeasurement(measurement)
                 }
             } catch (e: Exception) {

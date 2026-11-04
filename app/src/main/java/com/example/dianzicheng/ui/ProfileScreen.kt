@@ -52,6 +52,8 @@ fun ProfileContent(
     members: List<FamilyMember>,
     onAddMember: (String, Sex, Double, Long, Double) -> Unit,
     onDeleteMember: (FamilyMember) -> Unit,
+    onUpdateMember: (FamilyMember) -> Unit = {},
+    onRecalculateHistory: () -> Unit = {},
     onResetPairing: () -> Unit,
     onNavigateToPairing: () -> Unit = onResetPairing,
     pairedMac: String? = null,
@@ -89,6 +91,8 @@ fun ProfileContent(
     var showModelDialog by remember { mutableStateOf(false) }
     var showAlgorithmDialog by remember { mutableStateOf(false) }
     var memberToDelete by remember { mutableStateOf<FamilyMember?>(null) }
+    var memberToEdit by remember { mutableStateOf<FamilyMember?>(null) }
+    var showRecalcConfirm by remember { mutableStateOf(false) }
 
     val dateFormat = remember { SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()) }
 
@@ -149,6 +153,7 @@ fun ProfileContent(
                 items(members) { member ->
                     MemberCard(
                         member = member,
+                        onEdit = { memberToEdit = member },
                         onDelete = { memberToDelete = member }
                     )
                 }
@@ -419,6 +424,17 @@ fun ProfileContent(
                         color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
                     )
                     SettingsItem(
+                        title = "重算历史记录",
+                        subtitle = "按当前算法与成员最新资料（年龄按称重时刻推算）重算全部历史指标",
+                        icon = Icons.Default.Refresh,
+                        onClick = { showRecalcConfirm = true },
+                        isLoading = isOperating
+                    )
+                    HorizontalDivider(
+                        modifier = Modifier.padding(horizontal = 16.dp),
+                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+                    )
+                    SettingsItem(
                         title = "查看运行日志",
                         subtitle = if (logEntries.isEmpty()) "暂无日志" else "共 ${logEntries.size} 条记录",
                         icon = Icons.AutoMirrored.Filled.Article,
@@ -458,6 +474,36 @@ fun ProfileContent(
             onConfirm = { name, sex, height, birth, weight ->
                 onAddMember(name, sex, height, birth, weight)
                 showAddDialog = false
+            }
+        )
+    }
+
+    memberToEdit?.let { target ->
+        AddMemberDialog(
+            initial = target,
+            onDismiss = { memberToEdit = null },
+            onConfirm = { name, sex, height, birth, _ ->
+                onUpdateMember(target.copy(name = name, sex = sex, heightCm = height, birthDateEpochMs = birth))
+                memberToEdit = null
+            }
+        )
+    }
+
+    if (showRecalcConfirm) {
+        AlertDialog(
+            onDismissRequest = { showRecalcConfirm = false },
+            title = { Text("重算历史记录", fontWeight = FontWeight.Bold) },
+            text = {
+                Text("将按「${selectedBodyAlgorithm.displayName}」和各成员当前的性别、身高、年龄重算全部历史体成分指标。原始体重、阻抗与称重时间不会改变，重算次数会记录在每条记录上。")
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    onRecalculateHistory()
+                    showRecalcConfirm = false
+                }) { Text("开始重算", fontWeight = FontWeight.Bold) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showRecalcConfirm = false }) { Text("取消") }
             }
         )
     }
@@ -858,7 +904,7 @@ fun WebDavConfigDialog(
 }
 
 @Composable
-fun MemberCard(member: FamilyMember, onDelete: () -> Unit) {
+fun MemberCard(member: FamilyMember, onEdit: () -> Unit = {}, onDelete: () -> Unit) {
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(8.dp),
@@ -888,10 +934,13 @@ fun MemberCard(member: FamilyMember, onDelete: () -> Unit) {
             Column(modifier = Modifier.weight(1f)) {
                 Text(text = member.name, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
                 Text(
-                    text = "${if (member.sex == Sex.MALE) "男" else "女"} · ${member.heightCm.toInt()}cm",
+                    text = "${if (member.sex == Sex.MALE) "男" else "女"} · ${member.heightCm.toInt()}cm · ${com.example.dianzicheng.domain.BodyAlgorithm.ageAt(member.birthDateEpochMs)}岁",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+            }
+            IconButton(onClick = onEdit) {
+                Icon(Icons.Default.Edit, contentDescription = "编辑", modifier = Modifier.size(20.dp))
             }
             IconButton(
                 onClick = onDelete,
@@ -909,15 +958,20 @@ fun MemberCard(member: FamilyMember, onDelete: () -> Unit) {
 @Composable
 fun AddMemberDialog(
     onDismiss: () -> Unit,
-    onConfirm: (String, Sex, Double, Long, Double) -> Unit
+    onConfirm: (String, Sex, Double, Long, Double) -> Unit,
+    initial: FamilyMember? = null
 ) {
-    var name by remember { mutableStateOf("") }
-    var sex by remember { mutableStateOf(Sex.MALE) }
-    var height by remember { mutableStateOf("170") }
+    val initialAge = remember(initial) {
+        initial?.let { com.example.dianzicheng.domain.BodyAlgorithm.ageAt(it.birthDateEpochMs) } ?: 25
+    }
+    var name by remember { mutableStateOf(initial?.name ?: "") }
+    var sex by remember { mutableStateOf(initial?.sex ?: Sex.MALE) }
+    var height by remember { mutableStateOf(initial?.heightCm?.let { if (it % 1.0 == 0.0) it.toInt().toString() else it.toString() } ?: "170") }
+    var age by remember { mutableStateOf(initialAge.toString()) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("添加新成员") },
+        title = { Text(if (initial == null) "添加新成员" else "编辑成员") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 OutlinedTextField(
@@ -954,18 +1008,31 @@ fun AddMemberDialog(
                     modifier = Modifier.fillMaxWidth(),
                     shape = MaterialTheme.shapes.medium
                 )
+
+                OutlinedTextField(
+                    value = age,
+                    onValueChange = { v -> age = v.filter { it.isDigit() }.take(3) },
+                    label = { Text("年龄 (岁)") },
+                    supportingText = if (initial != null) { { Text("修改后将重算该成员的历史记录") } } else null,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = MaterialTheme.shapes.medium
+                )
             }
         },
         confirmButton = {
             Button(
                 onClick = {
                     val finalName = if (name.isBlank()) "新成员" else name.trim()
+                    val ageInt = (age.toIntOrNull() ?: initialAge).coerceIn(1, 120)
+                    // 年龄未改动时保留原出生日期（避免丢失月/日精度）；否则由年龄反推
+                    val birth = if (initial != null && ageInt == initialAge) initial.birthDateEpochMs
+                        else com.example.dianzicheng.domain.BodyAlgorithm.birthDateFromAge(ageInt)
                     onConfirm(
                         finalName,
                         sex,
-                        height.toDoubleOrNull() ?: 170.0,
-                        System.currentTimeMillis() - (1000L * 60 * 60 * 24 * 365 * 25),
-                        0.0
+                        (height.toDoubleOrNull() ?: 170.0).coerceIn(50.0, 250.0),
+                        birth,
+                        initial?.referenceWeightKg ?: 0.0
                     )
                     onDismiss()
                 },
@@ -1025,6 +1092,8 @@ fun ProfileScreen(
         members = members,
         onAddMember = { name, sex, height, birth, weight -> viewModel.addMember(name, sex, height, birth, weight) },
         onDeleteMember = { viewModel.deleteMember(it) },
+        onUpdateMember = { viewModel.updateMember(it) },
+        onRecalculateHistory = { viewModel.recalculateAllHistory() },
         onResetPairing = { viewModel.resetPairing() },
         onNavigateToPairing = onNavigateToPairing,
         pairedMac = pairedMac,

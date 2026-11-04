@@ -80,7 +80,11 @@ fun DashboardContent(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding)
-                .verticalScroll(rememberScrollState())
+                // 仅在出现测量结果卡片（内容确实超出屏幕）时才允许滚动，空闲状态下首页保持固定
+                .then(
+                    if (uiState.currentMeasurement != null) Modifier.verticalScroll(rememberScrollState())
+                    else Modifier
+                )
                 .padding(horizontal = 24.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
@@ -161,7 +165,9 @@ fun DashboardContent(
                 }
             }
 
-            Spacer(modifier = Modifier.height(16.dp))
+            if (uiState.currentMeasurement != null) {
+                Spacer(modifier = Modifier.height(16.dp))
+            }
 
             // Action Button / Binding Guidance Card
             if (!uiState.isDeviceRemembered) {
@@ -294,7 +300,7 @@ fun DashboardContent(
                 }
             }
 
-            Spacer(modifier = Modifier.height(32.dp))
+            Spacer(modifier = Modifier.height(if (uiState.currentMeasurement != null) 32.dp else 8.dp))
         }
     }
 

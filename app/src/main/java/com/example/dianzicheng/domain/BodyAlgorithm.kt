@@ -36,6 +36,7 @@ object BodyAlgorithm {
      * @param heightCm        身高（厘米），用于计算 BMI 和作为 BIA 辅助参数
      * @param birthDateEpochMs 出生日期（Unix 毫秒时间戳），用于推算年龄
      * @param algorithmType   指定使用的计算算法，若不传则使用当前全局配置 [currentAlgorithm]
+     * @param measuredAtEpochMs 称重时刻（毫秒）；年龄按该时刻推算，历史重算时必须传入原称重时间
      * @return 完整的 [BodyMeasurement] 对象；id 为空字符串，由 repository 层赋值
      */
     fun calculate(
@@ -44,13 +45,14 @@ object BodyAlgorithm {
         sex: Sex,
         heightCm: Double,
         birthDateEpochMs: Long,
-        algorithmType: BodyAlgorithmType = currentAlgorithm
+        algorithmType: BodyAlgorithmType = currentAlgorithm,
+        measuredAtEpochMs: Long = System.currentTimeMillis()
     ): BodyMeasurement {
         // 限制身高在生理合理范围（50~250cm），彻底杜绝 heightCm <= 0 时的除以零或 NaN 异常
         val safeHeightCm = heightCm.coerceIn(50.0, 250.0)
         val heightM = safeHeightCm / 100.0
         val bmi = if (weightKg > 0.0) (weightKg / (heightM * heightM)).coerceIn(1.0, 100.0) else 0.0
-        val age = calculateAge(birthDateEpochMs)
+        val age = ageAt(birthDateEpochMs, measuredAtEpochMs)
 
         // 仅当测得有效阻抗（> 0.0Ω 且体重有效）时，严格使用 BIA 生物电阻抗计算体脂及身体成分；
         // 否则所有 BIA 指标保持 0.0（不使用估算回退）
@@ -140,7 +142,7 @@ object BodyAlgorithm {
 
         return BodyMeasurement(
             id = "", // id 由 ScaleRepository 根据 sessionId 赋值，此处留空
-            measuredAtEpochMs = System.currentTimeMillis(),
+            measuredAtEpochMs = measuredAtEpochMs,
             weightKg = weightKg,
             impedanceOhm = impedanceOhm,
             bmi = bmi,
@@ -150,45 +152,47 @@ object BodyAlgorithm {
             proteinPct = protein,
             boneMassKg = bone,
             memberId = null,           // 成员绑定由 ScaleRepository 处理
-            memberNameSnapshot = null
+            memberNameSnapshot = null,
+            ageUsed = age,
+            heightCmUsed = safeHeightCm,
+            algorithmId = algorithmType.id
         )
     }
 
     /**
-     * 根据出生日期时间戳计算当前年龄（整数岁）。
+     * 根据出生日期与参考时刻计算整数岁年龄。
      *
-     * 以当年元旦为分界：若当年的第几天 < 出生日期的第几天，说明今年生日未过，年龄减 1。
+     * 历史记录重算时以“称重时刻”为参考，使 10 个月前的记录使用当时的年龄，而不是今天的年龄。
+     * 出生日期未设置（<= 0）、晚于参考时刻时，返回中性默认年龄 30 岁并记录警告。
      *
-     * Bug #27 修复：当 birthDateEpochMs <= 0L 时（成员未填写出生日期），
-     * 原实现会将 0L 当作 1970-01-01 计算，得到约 56 岁，导致体脂率偏高。
-     * 现改为返回中性默认年龄 30 岁，减少未填生日时的计算偏差，并记录警告日志。
-     *
-     * @param birthDateEpochMs 出生日期（Unix 毫秒时间戳），0 或负数表示未设置
-     * @return 年龄（1~120 范围内，防止异常数据导致崩溃）
+     * @param birthDateEpochMs 出生日期（Unix 毫秒时间戳）
+     * @param atEpochMs        参考时刻（Unix 毫秒时间戳），默认当前时间
+     * @return 年龄（1~120）
      */
-    private fun calculateAge(birthDateEpochMs: Long): Int {
-        // 出生日期未设置（0L 或负数）：返回中性默认年龄，避免 1970 年导致偏差
+    fun ageAt(birthDateEpochMs: Long, atEpochMs: Long = System.currentTimeMillis()): Int {
         if (birthDateEpochMs <= 0L) {
             AppLogger.w("BodyAlgorithm", "出生日期未设置（birthDateEpochMs=$birthDateEpochMs），使用默认年龄 30 岁参与体成分计算")
             return 30
         }
-        val today = Calendar.getInstance()
-        val birthDate = Calendar.getInstance().apply {
-            timeInMillis = birthDateEpochMs
-        }
-        if (birthDate.after(today)) {
-            AppLogger.w("BodyAlgorithm", "出生日期在未来（birthDateEpochMs=$birthDateEpochMs），使用默认年龄 30 岁参与体成分计算")
+        val ref = Calendar.getInstance().apply { timeInMillis = atEpochMs }
+        val birthDate = Calendar.getInstance().apply { timeInMillis = birthDateEpochMs }
+        if (birthDate.after(ref)) {
+            AppLogger.w("BodyAlgorithm", "出生日期晚于称重时刻（birthDateEpochMs=$birthDateEpochMs, at=$atEpochMs），使用默认年龄 30 岁参与体成分计算")
             return 30
         }
-        var age = today.get(Calendar.YEAR) - birthDate.get(Calendar.YEAR)
-        // 今年生日未过：年龄再减 1（使用月/日比较，避免闰年 DAY_OF_YEAR 偏差问题）
-        val todayMonth = today.get(Calendar.MONTH)
-        val todayDay   = today.get(Calendar.DAY_OF_MONTH)
-        val birthMonth = birthDate.get(Calendar.MONTH)
-        val birthDay   = birthDate.get(Calendar.DAY_OF_MONTH)
-        if (todayMonth < birthMonth || (todayMonth == birthMonth && todayDay < birthDay)) {
-            age--
-        }
+        var age = ref.get(Calendar.YEAR) - birthDate.get(Calendar.YEAR)
+        val rm = ref.get(Calendar.MONTH)
+        val rd = ref.get(Calendar.DAY_OF_MONTH)
+        val bm = birthDate.get(Calendar.MONTH)
+        val bd = birthDate.get(Calendar.DAY_OF_MONTH)
+        if (rm < bm || (rm == bm && rd < bd)) age--
         return age.coerceIn(1, 120)
+    }
+
+    /** 由整数年龄反推出生日期（取今天往前推 [age] 年），用于仅输入年龄的成员编辑场景。 */
+    fun birthDateFromAge(age: Int): Long {
+        val c = Calendar.getInstance()
+        c.add(Calendar.YEAR, -age.coerceIn(1, 120))
+        return c.timeInMillis
     }
 }

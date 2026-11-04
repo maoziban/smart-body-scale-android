@@ -41,6 +41,11 @@ data class FamilyMember(
  * @param boneMassKg          骨量（公斤），仅当有有效阻抗时计算
  * @param memberId            关联的家庭成员 ID，null 表示未绑定成员
  * @param memberNameSnapshot  记录保存时的成员姓名快照（防止成员改名后历史数据混乱）
+ * @param ageUsed             计算指标时采用的年龄（按称重时刻推算），0 表示未记录
+ * @param heightCmUsed        计算指标时采用的身高（厘米），0 表示未记录
+ * @param algorithmId         计算指标时采用的算法 ID（[BodyAlgorithmType.id]），空串表示未记录
+ * @param recalcCount         该记录被重新计算的次数（成员资料或算法变更触发）
+ * @param lastRecalcAtEpochMs 最近一次重算时间，0 表示从未重算
  */
 data class BodyMeasurement(
     val id: String,
@@ -55,4 +60,9 @@ data class BodyMeasurement(
     val boneMassKg: Double,
     val memberId: String?,
     val memberNameSnapshot: String?,
+    val ageUsed: Int = 0,
+    val heightCmUsed: Double = 0.0,
+    val algorithmId: String = "",
+    val recalcCount: Int = 0,
+    val lastRecalcAtEpochMs: Long = 0L,
 )

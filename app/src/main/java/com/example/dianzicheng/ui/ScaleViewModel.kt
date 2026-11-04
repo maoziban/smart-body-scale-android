@@ -518,7 +518,8 @@ class ScaleViewModel(
                         impedanceOhm = impedance,
                         sex = targetMember.sex,
                         heightCm = targetMember.heightCm,
-                        birthDateEpochMs = targetMember.birthDateEpochMs
+                        birthDateEpochMs = targetMember.birthDateEpochMs,
+                        measuredAtEpochMs = timestamp
                     )
                 } else {
                     // 没有精确匹配到成员时（如首测新成员、体重差异悬殊、或未建成员）：
@@ -629,7 +630,12 @@ class ScaleViewModel(
             delay(2000)
             try {
                 val enabled = prefs.healthConnectEnabled.first()
-                if (enabled && hc.hasAllPermissions()) {
+                if (!enabled) return@launch
+                if (!hc.isAvailable()) {
+                    AppLogger.w(TAG, "Health Connect 同步已开启但不可用: ${hc.unavailableReason()}")
+                } else if (!hc.hasWritePermissions()) {
+                    AppLogger.w(TAG, "Health Connect 同步已开启但缺少写入权限，请到“我的”页重新授权")
+                } else {
                     hc.writeMeasurement(measurement)
                 }
             } catch (e: Exception) {

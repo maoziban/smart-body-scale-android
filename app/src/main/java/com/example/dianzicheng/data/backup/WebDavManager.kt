@@ -111,6 +111,11 @@ class WebDavManager(private val dao: ScaleDao) {
                 obj.put("boneMassKg", m.boneMassKg)
                 obj.put("memberId", m.memberId ?: JSONObject.NULL)
                 obj.put("memberNameSnapshot", m.memberNameSnapshot ?: JSONObject.NULL)
+                obj.put("ageUsed", m.ageUsed)
+                obj.put("heightCmUsed", m.heightCmUsed)
+                obj.put("algorithmId", m.algorithmId)
+                obj.put("recalcCount", m.recalcCount)
+                obj.put("lastRecalcAtEpochMs", m.lastRecalcAtEpochMs)
                 measurementsArray.put(obj)
             }
             jsonRoot.put("measurements", measurementsArray)
@@ -191,7 +196,12 @@ class WebDavManager(private val dao: ScaleDao) {
                             proteinPct = obj.optDouble("proteinPct", 0.0),
                             boneMassKg = obj.optDouble("boneMassKg", 0.0),
                             memberId = if (obj.isNull("memberId")) null else obj.optString("memberId").takeIf { it.isNotBlank() },
-                            memberNameSnapshot = if (obj.isNull("memberNameSnapshot")) null else obj.optString("memberNameSnapshot").takeIf { it.isNotBlank() }
+                            memberNameSnapshot = if (obj.isNull("memberNameSnapshot")) null else obj.optString("memberNameSnapshot").takeIf { it.isNotBlank() },
+                            ageUsed = obj.optInt("ageUsed", 0),
+                            heightCmUsed = obj.optDouble("heightCmUsed", 0.0),
+                            algorithmId = obj.optString("algorithmId", ""),
+                            recalcCount = obj.optInt("recalcCount", 0),
+                            lastRecalcAtEpochMs = obj.optLong("lastRecalcAtEpochMs", 0L)
                         )
                     )
                 }
