@@ -1285,8 +1285,10 @@ class BleScaleClient(private val context: Context) {
 
             result.impedanceOhm?.let { imp ->
                 // 人体生物电阻抗（BIA）必须基于真实人体踩秤（体重 >= 3.0kg）才能测得，空秤时禁止接收阻抗
-                if (imp > 0.0 && (_weight.value >= 3.0 || result.weightKg >= 3.0)) {
+                if (ImpedanceGate.accept(imp, result.isStable, result.weightKg, _weight.value)) {
                     _impedance.value = imp
+                } else if (imp > 0.0) {
+                    AppLogger.d(TAG, "丢弃非锁定帧/空载帧中的阻抗 ${imp.toInt()}Ω (frameStable=${result.isStable}, 体重=${String.format(Locale.US, "%.2f", result.weightKg)}kg)")
                 }
             }
         }
