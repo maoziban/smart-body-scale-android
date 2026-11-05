@@ -36,6 +36,12 @@ class ScaleRepository(private val dao: ScaleDao) {
         dao.getAllMeasurementsList().map { it.toDomain() }
 
     /**
+     * 获取最新一条测量记录（挂起函数，无记录时返回 null）。
+     */
+    suspend fun getLatestMeasurement(): BodyMeasurement? =
+        dao.getLatestMeasurement()?.toDomain()
+
+    /**
      * 获取所有家庭成员列表（Flow）。
      * ScaleViewModel 和 ProfileViewModel 均订阅此 Flow 以保持成员列表同步。
      */

@@ -1272,8 +1272,11 @@ class BleScaleClient(private val context: Context) {
                     // 彻底清零阻抗，杜绝上一轮称重遗留或动态爬升中的杂质阻抗残留！
                     _impedance.value = 0.0
                 }
-            } else if (result.weightKg <= 0.0 && result.impedanceOhm == null) {
-                // 仅当体重为 0 且无阻抗数据时（下秤离秤包），才归零体重与稳定标志
+            } else if (result.weightKg <= 0.0 && (result.impedanceOhm == null || !result.isStable)) {
+                // 体重为 0 且无阻抗，或虽带残留阻抗但未锁定（下秤空载复位帧，如 AC 29 02 ... 阻抗 384Ω）：
+                // 均判定为离秤，立即归零体重与稳定标志并退出“测量中”，不必等 2.5s 看门狗
+                // （空载帧每 ~1.5s 一帧，会不断续期看门狗，导致状态滞留 7 秒以上）。
+                // 真正的阻抗专属包带有锁定标志（isStable=true），不受影响。
                 _weight.value = 0.0
                 _isStable.value = false
                 _impedance.value = 0.0

@@ -167,6 +167,9 @@ fun DashboardContent(
 
             if (uiState.currentMeasurement != null) {
                 Spacer(modifier = Modifier.height(16.dp))
+            } else {
+                // 空闲状态：弹性撑开，让下方的绑定/操作卡片贴底显示
+                Spacer(modifier = Modifier.weight(1f))
             }
 
             // Action Button / Binding Guidance Card
@@ -200,11 +203,20 @@ fun DashboardContent(
                         Spacer(modifier = Modifier.height(16.dp))
                         Button(
                             onClick = onNavigateToPairing,
-                            modifier = Modifier.fillMaxWidth()
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = 48.dp),
+                            contentPadding = PaddingValues(horizontal = 24.dp, vertical = 12.dp)
                         ) {
-                            Icon(Icons.Default.Bluetooth, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Icon(Icons.Default.Bluetooth, contentDescription = null, modifier = Modifier.size(20.dp))
                             Spacer(modifier = Modifier.width(8.dp))
-                            Text("搜索并绑定设备")
+                            Text(
+                                "搜索并绑定设备",
+                                style = MaterialTheme.typography.labelLarge.copy(
+                                    fontSize = 15.sp,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            )
                         }
                     }
                 }
@@ -244,11 +256,20 @@ fun DashboardContent(
                             colors = ButtonDefaults.buttonColors(
                                 containerColor = MaterialTheme.colorScheme.error
                             ),
-                            modifier = Modifier.fillMaxWidth()
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = 48.dp),
+                            contentPadding = PaddingValues(horizontal = 24.dp, vertical = 12.dp)
                         ) {
-                            Icon(Icons.Default.Bluetooth, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Icon(Icons.Default.Bluetooth, contentDescription = null, modifier = Modifier.size(20.dp))
                             Spacer(modifier = Modifier.width(8.dp))
-                            Text("开启手机蓝牙")
+                            Text(
+                                "开启手机蓝牙",
+                                style = MaterialTheme.typography.labelLarge.copy(
+                                    fontSize = 15.sp,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            )
                         }
                     }
                 }
@@ -300,7 +321,7 @@ fun DashboardContent(
                 }
             }
 
-            Spacer(modifier = Modifier.height(if (uiState.currentMeasurement != null) 32.dp else 8.dp))
+            Spacer(modifier = Modifier.height(if (uiState.currentMeasurement != null) 32.dp else 16.dp))
         }
     }
 
@@ -764,4 +785,77 @@ fun DashboardScreen(
         onNavigateToPairing = onNavigateToPairing,
         modifier = modifier
     )
+}
+
+@Preview(name = "待机未称重", showBackground = true)
+@Composable
+private fun DashboardIdlePreview() {
+    val sampleMember = FamilyMember(
+        id = "1",
+        name = "张三",
+        sex = Sex.MALE,
+        heightCm = 175.0,
+        birthDateEpochMs = 946684800000L,
+        referenceWeightKg = 68.5
+    )
+    电子秤Theme(dynamicColor = false) {
+        DashboardContent(
+            uiState = ScaleUiState(
+                connection = BleScaleClient.ConnectionState.IDLE,
+                isDeviceRemembered = true,
+                pairedDeviceName = "Phicomm S7",
+                selectedMember = sampleMember,
+                availableMembers = listOf(sampleMember)
+            ),
+            onStartScan = {},
+            onDismissAlert = {},
+            onSelectMember = {},
+            onBindMember = {}
+        )
+    }
+}
+
+@Preview(name = "测量完成（有阻抗体脂数据）", showBackground = true)
+@Composable
+private fun DashboardMeasuredPreview() {
+    val sampleMember = FamilyMember(
+        id = "1",
+        name = "张三",
+        sex = Sex.MALE,
+        heightCm = 175.0,
+        birthDateEpochMs = 946684800000L,
+        referenceWeightKg = 68.5
+    )
+    val sampleMeasurement = BodyMeasurement(
+        id = "sample_meas_1",
+        measuredAtEpochMs = System.currentTimeMillis(),
+        weightKg = 68.5,
+        impedanceOhm = 500.0,
+        bmi = 22.4,
+        bodyFatPct = 18.2,
+        muscleKg = 52.8,
+        waterPct = 58.5,
+        proteinPct = 17.5,
+        boneMassKg = 3.1,
+        memberId = sampleMember.id,
+        memberNameSnapshot = sampleMember.name
+    )
+    电子秤Theme(dynamicColor = false) {
+        DashboardContent(
+            uiState = ScaleUiState(
+                connection = BleScaleClient.ConnectionState.CONNECTED,
+                isDeviceRemembered = true,
+                pairedDeviceName = "Phicomm S7",
+                liveWeightKg = 68.5,
+                isStable = true,
+                currentMeasurement = sampleMeasurement,
+                selectedMember = sampleMember,
+                availableMembers = listOf(sampleMember)
+            ),
+            onStartScan = {},
+            onDismissAlert = {},
+            onSelectMember = {},
+            onBindMember = {}
+        )
+    }
 }

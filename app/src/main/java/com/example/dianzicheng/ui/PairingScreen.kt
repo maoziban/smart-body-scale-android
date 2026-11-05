@@ -31,6 +31,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
@@ -39,6 +40,7 @@ import android.content.Intent
 import android.provider.Settings
 import com.example.dianzicheng.data.ble.BleScaleClient
 import com.example.dianzicheng.domain.ScaleModel
+import com.example.dianzicheng.ui.theme.电子秤Theme
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -884,6 +886,37 @@ private fun LocationDisabledCard(onEnableLocation: () -> Unit) {
             ) {
                 Text("前往开启系统定位")
             }
+        }
+    }
+}
+
+@Preview(name = "踩秤中卡片", showBackground = true)
+@Composable
+private fun ActiveWeighingCardPreview() {
+    val sampleScale = BleScaleClient.DiscoveredScaleDevice(
+        name = "MI SCALE2",
+        address = "88:0F:10:AA:BB:CC",
+        rssi = -55,
+        isConfirmedScale = true,
+        liveWeightKg = 65.25
+    )
+    电子秤Theme(dynamicColor = false) {
+        Box(modifier = Modifier.padding(16.dp)) {
+            ActiveWeighingCard(
+                scale = sampleScale,
+                isBinding = false,
+                onBind = {}
+            )
+        }
+    }
+}
+
+@Preview(name = "蓝牙关闭提示卡片", showBackground = true)
+@Composable
+private fun BluetoothDisabledCardPreview() {
+    电子秤Theme(dynamicColor = false) {
+        Box(modifier = Modifier.padding(16.dp)) {
+            BluetoothDisabledCard(onEnableBluetooth = {})
         }
     }
 }

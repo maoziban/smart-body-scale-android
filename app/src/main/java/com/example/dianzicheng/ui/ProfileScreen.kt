@@ -6,6 +6,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.health.connect.client.PermissionController
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -62,28 +63,38 @@ fun ProfileContent(
     onSelectScaleModel: (ScaleModel) -> Unit = {},
     selectedBodyAlgorithm: BodyAlgorithmType = BodyAlgorithmType.COMMERCIAL,
     onSelectBodyAlgorithm: (BodyAlgorithmType) -> Unit = {},
-    healthConnectEnabled: Boolean,
-    onToggleHealthConnect: (Boolean) -> Unit,
-    onRequestHealthConnectPermissions: () -> Unit,
-    onBatchSyncToHealthConnect: () -> Unit,
-    onOpenMiHealth: () -> Unit,
-    onOpenHealthConnectSettings: () -> Unit,
-    syncProgress: String?,
-    isMiHealthInstalled: Boolean,
-    webdavUrl: String,
-    webdavUsername: String,
-    webdavPassword: String,
-    lastBackupTime: Long,
-    onSaveWebdavConfig: (String, String, String) -> Unit,
-    onTestWebdavConnection: (String, String, String) -> Unit,
-    onBackupData: () -> Unit,
-    onRestoreData: () -> Unit,
-    isOperating: Boolean,
+    healthConnectEnabled: Boolean = false,
+    onToggleHealthConnect: (Boolean) -> Unit = {},
+    onRequestHealthConnectPermissions: () -> Unit = {},
+    onBatchSyncToHealthConnect: () -> Unit = {},
+    onOpenMiHealth: () -> Unit = {},
+    onOpenHealthConnectSettings: () -> Unit = {},
+    syncProgress: String? = null,
+    isMiHealthInstalled: Boolean = false,
+    zeppLifeSyncEnabled: Boolean = false,
+    onToggleZeppLifeSync: (Boolean) -> Unit = {},
+    zeppLifeAccount: String = "",
+    zeppLifePassword: String = "",
+    zeppLifeAppToken: String = "",
+    zeppLifeUserId: String = "",
+    onSaveZeppLifeConfig: (String, String, String, String) -> Unit = { _, _, _, _ -> },
+    onTestZeppLifeConnection: (String, String, String, String, (Boolean, String) -> Unit) -> Unit = { _, _, _, _, _ -> },
+    onSyncLatestToZeppLife: () -> Unit = {},
+    webdavUrl: String = "",
+    webdavUsername: String = "",
+    webdavPassword: String = "",
+    lastBackupTime: Long = 0L,
+    onSaveWebdavConfig: (String, String, String) -> Unit = { _, _, _ -> },
+    onTestWebdavConnection: (String, String, String) -> Unit = { _, _, _ -> },
+    onBackupData: () -> Unit = {},
+    onRestoreData: () -> Unit = {},
+    isOperating: Boolean = false,
     logEntries: List<AppLogger.LogEntry> = emptyList(),
     onClearLogs: () -> Unit = {},
     onShareLogs: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
+    val context = LocalContext.current
     var showAddDialog by remember { mutableStateOf(false) }
     var showWebdavDialog by remember { mutableStateOf(false) }
     var showLogDialog by remember { mutableStateOf(false) }
@@ -93,6 +104,8 @@ fun ProfileContent(
     var memberToDelete by remember { mutableStateOf<FamilyMember?>(null) }
     var memberToEdit by remember { mutableStateOf<FamilyMember?>(null) }
     var showRecalcConfirm by remember { mutableStateOf(false) }
+    var showZeppDialog by remember { mutableStateOf(false) }
+    var showHealthConnectDialog by remember { mutableStateOf(false) }
 
     val dateFormat = remember { SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()) }
 
@@ -119,14 +132,14 @@ fun ProfileContent(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding),
-            contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 12.dp, bottom = 24.dp),
-            verticalArrangement = Arrangement.spacedBy(20.dp)
+            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 24.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             // Member Section
             item {
                 Text(
                     text = "成员管理",
-                    style = MaterialTheme.typography.titleMedium,
+                    style = MaterialTheme.typography.titleSmall,
                     color = MaterialTheme.colorScheme.primary,
                     fontWeight = FontWeight.SemiBold
                 )
@@ -139,12 +152,12 @@ fun ProfileContent(
                         colors = CardDefaults.cardColors(
                             containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
                         ),
-                        shape = MaterialTheme.shapes.large
+                        shape = RoundedCornerShape(8.dp)
                     ) {
                         Text(
                             "暂无成员，点击右上角图标添加",
-                            modifier = Modifier.padding(24.dp),
-                            style = MaterialTheme.typography.bodyMedium,
+                            modifier = Modifier.padding(16.dp),
+                            style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
@@ -159,12 +172,12 @@ fun ProfileContent(
                 }
             }
 
-            // System Health Section
+            // Data Synchronization Section
             item {
-                Spacer(modifier = Modifier.height(8.dp))
+                Spacer(modifier = Modifier.height(4.dp))
                 Text(
-                    text = "系统健康同步 (Health Connect)",
-                    style = MaterialTheme.typography.titleMedium,
+                    text = "数据同步",
+                    style = MaterialTheme.typography.titleSmall,
                     color = MaterialTheme.colorScheme.primary,
                     fontWeight = FontWeight.SemiBold
                 )
@@ -177,157 +190,31 @@ fun ProfileContent(
                         .clip(RoundedCornerShape(8.dp))
                         .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f))
                 ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 20.dp, vertical = 16.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .size(40.dp)
-                                .clip(CircleShape)
-                                .background(MaterialTheme.colorScheme.primaryContainer),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(
-                                Icons.Default.Favorite,
-                                contentDescription = null,
-                                modifier = Modifier.size(20.dp),
-                                tint = MaterialTheme.colorScheme.onPrimaryContainer
-                            )
-                        }
-                        Spacer(modifier = Modifier.width(16.dp))
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(text = "同步至系统健康", style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium)
-                            Text(
-                                text = "将体重与体脂数据同步至系统 Health Connect",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                        Switch(
-                            checked = healthConnectEnabled,
-                            onCheckedChange = onToggleHealthConnect
-                        )
-                    }
-
-                    if (healthConnectEnabled) {
-                        HorizontalDivider(
-                            modifier = Modifier.padding(horizontal = 16.dp),
-                            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
-                        )
-                        SettingsItem(
-                            title = "申请健康中心读写权限",
-                            icon = Icons.Default.Security,
-                            onClick = onRequestHealthConnectPermissions
-                        )
-                    }
-                }
-            }
-
-            // Xiaomi Health Section
-            item {
-                Spacer(modifier = Modifier.height(8.dp))
-                Text(
-                    text = "导入小米健康 (Mi Health)",
-                    style = MaterialTheme.typography.titleMedium,
-                    color = MaterialTheme.colorScheme.primary,
-                    fontWeight = FontWeight.SemiBold
-                )
-            }
-
-            item {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(8.dp))
-                        .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f))
-                ) {
-                    // 说明栏
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 20.dp, vertical = 14.dp),
-                        verticalAlignment = Alignment.Top
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .size(40.dp)
-                                .clip(CircleShape)
-                                .background(androidx.compose.ui.graphics.Color(0xFFFF6900).copy(alpha = 0.15f)),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(
-                                Icons.Default.FavoriteBorder,
-                                contentDescription = null,
-                                modifier = Modifier.size(20.dp),
-                                tint = androidx.compose.ui.graphics.Color(0xFFFF6900)
-                            )
-                        }
-                        Spacer(modifier = Modifier.width(16.dp))
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = "同步历史数据到小米健康",
-                                style = MaterialTheme.typography.bodyLarge,
-                                fontWeight = FontWeight.Medium
-                            )
-                            Text(
-                                text = "小米健康通过 Health Connect 读取数据。请先开启上方\"同步至系统健康\"并授权，再点击\"立即同步\"将全部历史记录一键导入小米健康。",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                            if (syncProgress != null) {
-                                Spacer(modifier = Modifier.height(8.dp))
-                                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-                                Spacer(modifier = Modifier.height(4.dp))
-                                Text(
-                                    text = syncProgress,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.primary
-                                )
-                            }
-                        }
-                    }
+                    SettingsItem(
+                        title = "系统健康 (Health Connect)",
+                        subtitle = if (healthConnectEnabled) "自动同步已开启" else "系统健康已关闭",
+                        icon = Icons.Default.Favorite,
+                        onClick = { showHealthConnectDialog = true }
+                    )
                     HorizontalDivider(
                         modifier = Modifier.padding(horizontal = 16.dp),
                         color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
                     )
                     SettingsItem(
-                        title = "立即同步全部历史数据",
-                        subtitle = "体重与体脂写入 Health Connect，小米健康可直接读取",
+                        title = "Zepp Life 云同步",
+                        subtitle = if (zeppLifeSyncEnabled) "云端同步已开启" else if (zeppLifeAppToken.isNotBlank() || zeppLifeAccount.isNotBlank()) "已配置 (未开启)" else "未配置",
                         icon = Icons.Default.CloudSync,
-                        onClick = onBatchSyncToHealthConnect,
-                        isLoading = syncProgress != null
-                    )
-                    HorizontalDivider(
-                        modifier = Modifier.padding(horizontal = 16.dp),
-                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
-                    )
-                    SettingsItem(
-                        title = if (isMiHealthInstalled) "打开小米健康" else "安装小米健康",
-                        subtitle = "在小米健康 > 设置 > 数据来源 中启用 Health Connect",
-                        icon = Icons.AutoMirrored.Filled.OpenInNew,
-                        onClick = onOpenMiHealth
-                    )
-                    HorizontalDivider(
-                        modifier = Modifier.padding(horizontal = 16.dp),
-                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
-                    )
-                    SettingsItem(
-                        title = "管理 Health Connect 权限",
-                        icon = Icons.Default.ManageAccounts,
-                        onClick = onOpenHealthConnectSettings
+                        onClick = { showZeppDialog = true }
                     )
                 }
             }
 
             // WebDAV Backup Section
             item {
-                Spacer(modifier = Modifier.height(8.dp))
+                Spacer(modifier = Modifier.height(4.dp))
                 Text(
                     text = "WebDAV 云端备份",
-                    style = MaterialTheme.typography.titleMedium,
+                    style = MaterialTheme.typography.titleSmall,
                     color = MaterialTheme.colorScheme.primary,
                     fontWeight = FontWeight.SemiBold
                 )
@@ -341,7 +228,8 @@ fun ProfileContent(
                         .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f))
                 ) {
                     SettingsItem(
-                        title = if (webdavUrl.isBlank()) "配置 WebDAV 服务器" else "WebDAV 已配置 (${if (webdavUrl.length > 24) webdavUrl.take(24) + "..." else webdavUrl})",
+                        title = "WebDAV 服务器配置",
+                        subtitle = if (webdavUrl.isBlank()) "未配置" else "已配置",
                         icon = Icons.Default.Cloud,
                         onClick = { showWebdavDialog = true }
                     )
@@ -351,7 +239,7 @@ fun ProfileContent(
                     )
                     SettingsItem(
                         title = "立即备份到 WebDAV",
-                        subtitle = if (lastBackupTime > 0) "上次备份：${dateFormat.format(Date(lastBackupTime))}" else "从未备份",
+                        subtitle = if (lastBackupTime > 0) "上次: ${dateFormat.format(Date(lastBackupTime))}" else "从未备份",
                         icon = Icons.Default.CloudUpload,
                         onClick = onBackupData,
                         isLoading = isOperating
@@ -371,10 +259,10 @@ fun ProfileContent(
 
             // Settings Section
             item {
-                Spacer(modifier = Modifier.height(8.dp))
+                Spacer(modifier = Modifier.height(4.dp))
                 Text(
                     text = "应用设置",
-                    style = MaterialTheme.typography.titleMedium,
+                    style = MaterialTheme.typography.titleSmall,
                     color = MaterialTheme.colorScheme.primary,
                     fontWeight = FontWeight.SemiBold
                 )
@@ -389,7 +277,7 @@ fun ProfileContent(
                 ) {
                     SettingsItem(
                         title = if (pairedMac.isNullOrEmpty()) "绑定体脂秤" else "已记住体脂秤",
-                        subtitle = if (pairedMac.isNullOrEmpty()) "暂未绑定，点击手动搜索并连接" else "${pairedDeviceName ?: "体脂秤"} ($pairedMac) · 点击解除绑定",
+                        subtitle = if (pairedMac.isNullOrEmpty()) "未绑定设备" else "${pairedDeviceName ?: "体脂秤"} · 点击解绑",
                         icon = Icons.Default.Bluetooth,
                         onClick = {
                             if (pairedMac.isNullOrEmpty()) {
@@ -405,7 +293,7 @@ fun ProfileContent(
                     )
                     SettingsItem(
                         title = "体脂秤型号与品牌",
-                        subtitle = "${selectedScaleModel.displayName} · 点击切换型号偏好",
+                        subtitle = selectedScaleModel.displayName,
                         icon = Icons.Default.Tune,
                         onClick = { showModelDialog = true }
                     )
@@ -415,7 +303,7 @@ fun ProfileContent(
                     )
                     SettingsItem(
                         title = "体成分计算算法",
-                        subtitle = "${selectedBodyAlgorithm.displayName} · 点击切换模型",
+                        subtitle = selectedBodyAlgorithm.displayName,
                         icon = Icons.Default.Calculate,
                         onClick = { showAlgorithmDialog = true }
                     )
@@ -425,7 +313,7 @@ fun ProfileContent(
                     )
                     SettingsItem(
                         title = "重算历史记录",
-                        subtitle = "按当前算法与成员最新资料（年龄按称重时刻推算）重算全部历史指标",
+                        subtitle = "按最新资料与算法重算历史指标",
                         icon = Icons.Default.Refresh,
                         onClick = { showRecalcConfirm = true },
                         isLoading = isOperating
@@ -448,7 +336,18 @@ fun ProfileContent(
                         title = "关于软件",
                         subtitle = "版本 1.4.1",
                         icon = Icons.Default.Info,
-                        onClick = { }
+                        onClick = {
+                            try {
+                                context.startActivity(
+                                    android.content.Intent(
+                                        android.content.Intent.ACTION_VIEW,
+                                        android.net.Uri.parse("https://github.com/maoziban/smart-body-scale-android")
+                                    )
+                                )
+                            } catch (_: Exception) {
+                                Toast.makeText(context, "无法打开浏览器", Toast.LENGTH_SHORT).show()
+                            }
+                        }
                     )
                 }
             }
@@ -582,6 +481,38 @@ fun ProfileContent(
         )
     }
 
+    if (showHealthConnectDialog) {
+        HealthConnectSyncDialog(
+            enabled = healthConnectEnabled,
+            onToggleEnabled = onToggleHealthConnect,
+            onRequestPermissions = onRequestHealthConnectPermissions,
+            onBatchSync = onBatchSyncToHealthConnect,
+            syncProgress = syncProgress,
+            onDismiss = { showHealthConnectDialog = false }
+        )
+    }
+
+    if (showZeppDialog) {
+        ZeppLifeConfigDialog(
+            syncEnabled = zeppLifeSyncEnabled,
+            onToggleSync = onToggleZeppLifeSync,
+            onSyncLatest = onSyncLatestToZeppLife,
+            initialAccount = zeppLifeAccount,
+            initialPassword = zeppLifePassword,
+            initialToken = zeppLifeAppToken,
+            initialUserId = zeppLifeUserId,
+            onDismiss = { showZeppDialog = false },
+            onSave = { acc, pass, token, uid ->
+                onSaveZeppLifeConfig(acc, pass, token, uid)
+                showZeppDialog = false
+            },
+            onTest = { acc, pass, token, uid, onResult ->
+                onTestZeppLifeConnection(acc, pass, token, uid, onResult)
+            },
+            isOperating = isOperating
+        )
+    }
+
     if (showModelDialog) {
         SelectScaleModelDialog(
             currentModel = selectedScaleModel,
@@ -614,19 +545,19 @@ fun SettingsItem(
         enabled = !isLoading
     ) {
         Row(
-            modifier = Modifier.padding(20.dp),
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 11.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Box(
                 modifier = Modifier
-                    .size(40.dp)
-                    .clip(CircleShape)
+                    .size(32.dp)
+                    .clip(RoundedCornerShape(8.dp))
                     .background(MaterialTheme.colorScheme.primaryContainer),
                 contentAlignment = Alignment.Center
             ) {
                 if (isLoading) {
                     CircularProgressIndicator(
-                        modifier = Modifier.size(20.dp),
+                        modifier = Modifier.size(16.dp),
                         color = MaterialTheme.colorScheme.onPrimaryContainer,
                         strokeWidth = 2.dp
                     )
@@ -634,14 +565,18 @@ fun SettingsItem(
                     Icon(
                         icon,
                         contentDescription = null,
-                        modifier = Modifier.size(20.dp),
+                        modifier = Modifier.size(17.dp),
                         tint = MaterialTheme.colorScheme.onPrimaryContainer
                     )
                 }
             }
-            Spacer(modifier = Modifier.width(16.dp))
+            Spacer(modifier = Modifier.width(12.dp))
             Column(modifier = Modifier.weight(1f)) {
-                Text(text = title, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium)
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.SemiBold
+                )
                 if (subtitle != null) {
                     Text(
                         text = subtitle,
@@ -653,8 +588,8 @@ fun SettingsItem(
             Icon(
                 Icons.AutoMirrored.Filled.ArrowForward,
                 contentDescription = null,
-                modifier = Modifier.size(16.dp),
-                tint = MaterialTheme.colorScheme.outline
+                modifier = Modifier.size(14.dp),
+                tint = MaterialTheme.colorScheme.outline.copy(alpha = 0.6f)
             )
         }
     }
@@ -677,7 +612,11 @@ fun LogViewerDialog(
     // 每次有新日志时自动滚动到最底部
     LaunchedEffect(entries.size) {
         if (entries.isNotEmpty()) {
-            listState.animateScrollToItem(entries.size - 1)
+            try {
+                listState.scrollToItem(entries.size - 1)
+            } catch (_: Exception) {
+                // 列表在滚动期间变化时忽略，避免崩溃
+            }
         }
     }
 
@@ -767,7 +706,7 @@ fun LogViewerDialog(
                     contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
                     verticalArrangement = Arrangement.spacedBy(2.dp)
                 ) {
-                    items(entries, key = { "${it.timestamp}_${it.message.hashCode()}" }) { entry ->
+                    items(entries, key = { it.id }) { entry ->
                         LogEntryRow(entry = entry, timeFmt = timeFmt)
                     }
                 }
@@ -904,6 +843,262 @@ fun WebDavConfigDialog(
 }
 
 @Composable
+fun HealthConnectSyncDialog(
+    enabled: Boolean,
+    onToggleEnabled: (Boolean) -> Unit,
+    onRequestPermissions: () -> Unit,
+    onBatchSync: () -> Unit,
+    syncProgress: String?,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    modifier = Modifier
+                        .size(28.dp)
+                        .clip(RoundedCornerShape(6.dp))
+                        .background(MaterialTheme.colorScheme.primaryContainer),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        Icons.Default.Favorite,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp),
+                        tint = MaterialTheme.colorScheme.onPrimaryContainer
+                    )
+                }
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("系统健康 (Health Connect)", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            }
+        },
+        text = {
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Text(
+                    "Health Connect 是 Android 官方健康数据共享中心。开启后可将测量数据写入，供 Google Fit、三星健康等外部健康 App 读取。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("自动同步至系统健康", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                            Text("称重保存后自动写入", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        Switch(checked = enabled, onCheckedChange = onToggleEnabled)
+                    }
+                }
+
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+
+                OutlinedButton(
+                    onClick = onRequestPermissions,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(Icons.Default.Security, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("申请健康中心读写权限")
+                }
+
+                Button(
+                    onClick = onBatchSync,
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = syncProgress == null
+                ) {
+                    if (syncProgress != null) {
+                        CircularProgressIndicator(modifier = Modifier.size(16.dp), color = MaterialTheme.colorScheme.onPrimary, strokeWidth = 2.dp)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(syncProgress)
+                    } else {
+                        Icon(Icons.Default.CloudSync, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("批量同步全部历史记录")
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text("完成", fontWeight = FontWeight.Bold)
+            }
+        }
+    )
+}
+
+@Composable
+fun ZeppLifeConfigDialog(
+    syncEnabled: Boolean = false,
+    onToggleSync: (Boolean) -> Unit = {},
+    onSyncLatest: () -> Unit = {},
+    initialAccount: String,
+    initialPassword: String,
+    initialToken: String,
+    initialUserId: String,
+    onDismiss: () -> Unit,
+    onSave: (String, String, String, String) -> Unit,
+    onTest: (String, String, String, String, (Boolean, String) -> Unit) -> Unit,
+    isOperating: Boolean
+) {
+    var account by remember { mutableStateOf(initialAccount) }
+    var password by remember { mutableStateOf(initialPassword) }
+    var token by remember { mutableStateOf(initialToken) }
+    var userId by remember { mutableStateOf(initialUserId) }
+    var testResult by remember { mutableStateOf<String?>(null) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    modifier = Modifier
+                        .size(28.dp)
+                        .clip(RoundedCornerShape(6.dp))
+                        .background(MaterialTheme.colorScheme.primaryContainer),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        Icons.Default.CloudSync,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp),
+                        tint = MaterialTheme.colorScheme.onPrimaryContainer
+                    )
+                }
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("Zepp Life 云端同步", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            }
+        },
+        text = {
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("自动上传到 Zepp 云端", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                            Text("称重保存后自动推送", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        Switch(checked = syncEnabled, onCheckedChange = onToggleSync)
+                    }
+                }
+
+                if (syncEnabled) {
+                    OutlinedButton(
+                        onClick = onSyncLatest,
+                        modifier = Modifier.fillMaxWidth(),
+                        enabled = !isOperating
+                    ) {
+                        Icon(Icons.Default.Upload, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("立即上传最新测量数据")
+                    }
+                }
+
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+
+                Text(
+                    "支持华米账号密码登录提取 Token，或直接填入免密 AppToken 直连。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                OutlinedTextField(
+                    value = account,
+                    onValueChange = { account = it },
+                    label = { Text("Zepp/华米 登录邮箱/账号") },
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = MaterialTheme.shapes.medium
+                )
+                OutlinedTextField(
+                    value = password,
+                    onValueChange = { password = it },
+                    label = { Text("登录密码") },
+                    visualTransformation = PasswordVisualTransformation(),
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = MaterialTheme.shapes.medium
+                )
+                HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+                Text(
+                    "如账号登录遇到验证码，可直接填入已有的 AppToken 与 UserId：",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                OutlinedTextField(
+                    value = token,
+                    onValueChange = { token = it },
+                    label = { Text("AppToken (可选)") },
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = MaterialTheme.shapes.medium
+                )
+                OutlinedTextField(
+                    value = userId,
+                    onValueChange = { userId = it },
+                    label = { Text("User ID (可选)") },
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = MaterialTheme.shapes.medium
+                )
+                testResult?.let {
+                    Text(
+                        it,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = { onSave(account, password, token, userId) },
+                shape = MaterialTheme.shapes.medium
+            ) {
+                Text("保存")
+            }
+        },
+        dismissButton = {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(
+                    onClick = {
+                        testResult = "正在测试连接并获取Token..."
+                        onTest(account, password, token, userId) { success, msg ->
+                            testResult = if (success) "✅ $msg" else "❌ $msg"
+                        }
+                    },
+                    enabled = !isOperating,
+                    shape = MaterialTheme.shapes.medium
+                ) {
+                    if (isOperating) {
+                        CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                    } else {
+                        Text("测试/提取")
+                    }
+                }
+                TextButton(onClick = onDismiss) {
+                    Text("取消")
+                }
+            }
+        }
+    )
+}
+
+@Composable
 fun MemberCard(member: FamilyMember, onEdit: () -> Unit = {}, onDelete: () -> Unit) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -913,43 +1108,52 @@ fun MemberCard(member: FamilyMember, onEdit: () -> Unit = {}, onDelete: () -> Un
         )
     ) {
         Row(
-            modifier = Modifier.padding(20.dp),
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Box(
                 modifier = Modifier
-                    .size(56.dp)
-                    .clip(CircleShape)
+                    .size(40.dp)
+                    .clip(RoundedCornerShape(8.dp))
                     .background(MaterialTheme.colorScheme.secondaryContainer),
                 contentAlignment = Alignment.Center
             ) {
                 Icon(
                     Icons.Default.Person,
                     contentDescription = null,
-                    modifier = Modifier.size(32.dp),
+                    modifier = Modifier.size(24.dp),
                     tint = MaterialTheme.colorScheme.onSecondaryContainer
                 )
             }
-            Spacer(modifier = Modifier.width(16.dp))
+            Spacer(modifier = Modifier.width(12.dp))
             Column(modifier = Modifier.weight(1f)) {
-                Text(text = member.name, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                Text(
+                    text = member.name,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
                 Text(
                     text = "${if (member.sex == Sex.MALE) "男" else "女"} · ${member.heightCm.toInt()}cm · ${com.example.dianzicheng.domain.BodyAlgorithm.ageAt(member.birthDateEpochMs)}岁",
-                    style = MaterialTheme.typography.bodyMedium,
+                    style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
-            IconButton(onClick = onEdit) {
-                Icon(Icons.Default.Edit, contentDescription = "编辑", modifier = Modifier.size(20.dp))
+            IconButton(
+                onClick = onEdit,
+                modifier = Modifier.size(36.dp)
+            ) {
+                Icon(Icons.Default.Edit, contentDescription = "编辑", modifier = Modifier.size(18.dp))
             }
+            Spacer(modifier = Modifier.width(4.dp))
             IconButton(
                 onClick = onDelete,
+                modifier = Modifier.size(36.dp),
                 colors = IconButtonDefaults.iconButtonColors(
                     containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.2f),
                     contentColor = MaterialTheme.colorScheme.error
                 )
             ) {
-                Icon(Icons.Default.Delete, contentDescription = "删除", modifier = Modifier.size(20.dp))
+                Icon(Icons.Default.Delete, contentDescription = "删除", modifier = Modifier.size(18.dp))
             }
         }
     }
@@ -1049,6 +1253,7 @@ fun AddMemberDialog(
     )
 }
 
+
 @Composable
 fun ProfileScreen(
     viewModel: ProfileViewModel,
@@ -1070,6 +1275,12 @@ fun ProfileScreen(
     val pairedDeviceName by viewModel.pairedDeviceName.collectAsState()
     val selectedScaleModel by viewModel.selectedScaleModel.collectAsState()
     val selectedBodyAlgorithm by viewModel.selectedBodyAlgorithm.collectAsState()
+
+    val zeppLifeSyncEnabled by viewModel.zeppLifeSyncEnabled.collectAsState()
+    val zeppLifeAccount by viewModel.zeppLifeAccount.collectAsState()
+    val zeppLifePassword by viewModel.zeppLifePassword.collectAsState()
+    val zeppLifeAppToken by viewModel.zeppLifeAppToken.collectAsState()
+    val zeppLifeUserId by viewModel.zeppLifeUserId.collectAsState()
 
     val permissionLauncher = rememberLauncherForActivityResult(
         contract = PermissionController.createRequestPermissionResultContract()
@@ -1135,6 +1346,15 @@ fun ProfileScreen(
         onOpenHealthConnectSettings = { viewModel.openHealthConnectSettings() },
         syncProgress = syncProgress,
         isMiHealthInstalled = viewModel.isMiHealthInstalled(),
+        zeppLifeSyncEnabled = zeppLifeSyncEnabled,
+        onToggleZeppLifeSync = { viewModel.toggleZeppLifeSync(it) },
+        zeppLifeAccount = zeppLifeAccount,
+        zeppLifePassword = zeppLifePassword,
+        zeppLifeAppToken = zeppLifeAppToken,
+        zeppLifeUserId = zeppLifeUserId,
+        onSaveZeppLifeConfig = { acc, pass, token, uid -> viewModel.saveZeppLifeConfig(acc, pass, token, uid) },
+        onTestZeppLifeConnection = { acc, pass, token, uid, onResult -> viewModel.testZeppLifeConnection(acc, pass, token, uid, onResult) },
+        onSyncLatestToZeppLife = { viewModel.syncLatestToZeppLife() },
         webdavUrl = webdavUrl,
         webdavUsername = webdavUsername,
         webdavPassword = webdavPassword,
@@ -1158,4 +1378,55 @@ fun ProfileScreen(
         modifier = modifier
     )
 }
+
+@Preview(name = "个人中心设置", showBackground = true)
+@Composable
+private fun ProfileScreenPreview() {
+    val sampleMembers = listOf(
+        FamilyMember(
+            id = "1",
+            name = "张三",
+            sex = Sex.MALE,
+            heightCm = 175.0,
+            birthDateEpochMs = 946684800000L,
+            referenceWeightKg = 68.5
+        ),
+        FamilyMember(
+            id = "2",
+            name = "李四",
+            sex = Sex.FEMALE,
+            heightCm = 162.0,
+            birthDateEpochMs = 978307200000L,
+            referenceWeightKg = 52.0
+        )
+    )
+    电子秤Theme(dynamicColor = false) {
+        ProfileContent(
+            members = sampleMembers,
+            onAddMember = { _, _, _, _, _ -> },
+            onDeleteMember = {},
+            onResetPairing = {},
+            pairedMac = "AA:BB:CC:DD:EE:FF",
+            pairedDeviceName = "Phicomm S7 体脂秤",
+            healthConnectEnabled = true,
+            onToggleHealthConnect = {},
+            onRequestHealthConnectPermissions = {},
+            onBatchSyncToHealthConnect = {},
+            onOpenMiHealth = {},
+            onOpenHealthConnectSettings = {},
+            syncProgress = null,
+            isMiHealthInstalled = true,
+            webdavUrl = "https://dav.jianguoyun.com/dav/",
+            webdavUsername = "user@example.com",
+            webdavPassword = "password",
+            lastBackupTime = System.currentTimeMillis() - 3600000L,
+            onSaveWebdavConfig = { _, _, _ -> },
+            onTestWebdavConnection = { _, _, _ -> },
+            onBackupData = {},
+            onRestoreData = {},
+            isOperating = false
+        )
+    }
+}
+
 

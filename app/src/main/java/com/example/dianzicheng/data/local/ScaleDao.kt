@@ -52,6 +52,10 @@ interface ScaleDao {
     @Query("SELECT * FROM measurements ORDER BY measuredAtEpochMs DESC")
     suspend fun getAllMeasurementsList(): List<MeasurementEntity>
 
+    /** 获取最新一条测量记录（挂起函数） */
+    @Query("SELECT * FROM measurements ORDER BY measuredAtEpochMs DESC LIMIT 1")
+    suspend fun getLatestMeasurement(): MeasurementEntity?
+
     /**
      * 获取指定成员的所有测量记录（Flow，按时间倒序），
      * 用于按成员过滤历史数据。

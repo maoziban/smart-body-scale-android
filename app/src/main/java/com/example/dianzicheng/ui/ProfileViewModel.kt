@@ -8,6 +8,7 @@ import com.example.dianzicheng.data.local.AppLogger
 import com.example.dianzicheng.data.local.PreferenceManager
 import com.example.dianzicheng.data.repository.ProfileRepository
 import com.example.dianzicheng.data.repository.ScaleRepository
+import com.example.dianzicheng.data.sync.ZeppLifeSyncManager
 import com.example.dianzicheng.domain.BodyAlgorithm
 import com.example.dianzicheng.domain.BodyAlgorithmType
 import com.example.dianzicheng.domain.FamilyMember
@@ -37,7 +38,8 @@ class ProfileViewModel(
     private val preferenceManager: PreferenceManager,
     private val webDavManager: WebDavManager? = null,
     private val healthConnectManager: HealthConnectManager? = null,
-    private val scaleRepository: ScaleRepository? = null
+    private val scaleRepository: ScaleRepository? = null,
+    private val zeppLifeSyncManager: ZeppLifeSyncManager? = null
 ) : ViewModel() {
 
     // ── 家庭成员 ──────────────────────────────────────────────────────────────
@@ -96,6 +98,28 @@ class ProfileViewModel(
     /** Health Connect 自动同步开关状态（来自 DataStore） */
     val healthConnectEnabled: StateFlow<Boolean> = preferenceManager.healthConnectEnabled
         .stateIn(viewModelScope, SharingStarted.Lazily, false)
+
+    // ── Zepp Life 云端同步设置 ────────────────────────────────────────────────
+
+    /** Zepp Life 云端自动同步开关 */
+    val zeppLifeSyncEnabled: StateFlow<Boolean> = preferenceManager.zeppLifeSyncEnabled
+        .stateIn(viewModelScope, SharingStarted.Lazily, false)
+
+    /** Zepp Life 账号 */
+    val zeppLifeAccount: StateFlow<String> = preferenceManager.zeppLifeAccount
+        .stateIn(viewModelScope, SharingStarted.Lazily, "")
+
+    /** Zepp Life 密码 */
+    val zeppLifePassword: StateFlow<String> = preferenceManager.zeppLifePassword
+        .stateIn(viewModelScope, SharingStarted.Lazily, "")
+
+    /** Zepp Life AppToken */
+    val zeppLifeAppToken: StateFlow<String> = preferenceManager.zeppLifeAppToken
+        .stateIn(viewModelScope, SharingStarted.Lazily, "")
+
+    /** Zepp Life UserId */
+    val zeppLifeUserId: StateFlow<String> = preferenceManager.zeppLifeUserId
+        .stateIn(viewModelScope, SharingStarted.Lazily, "")
 
     // ── WebDAV 配置 ───────────────────────────────────────────────────────────
 
@@ -335,6 +359,77 @@ class ProfileViewModel(
 
     /** 检查小米健康 App 是否已安装 */
     fun isMiHealthInstalled(): Boolean = healthConnectManager?.isMiHealthInstalled() == true
+
+    // ── Zepp Life (原小米运动) 云端同步控制 ────────────────────────────────────
+
+    /** 切换 Zepp Life 云端自动同步 */
+    fun toggleZeppLifeSync(enabled: Boolean) {
+        viewModelScope.launch {
+            preferenceManager.setZeppLifeSyncEnabled(enabled)
+            AppLogger.i("ProfileVM", "已${if (enabled) "开启" else "关闭"} Zepp Life 云端同步")
+        }
+    }
+
+    /** 保存 Zepp Life 配置 */
+    fun saveZeppLifeConfig(account: String, pass: String, token: String, userId: String) {
+        viewModelScope.launch {
+            preferenceManager.saveZeppLifeConfig(account, pass, token, userId)
+            _statusMessage.value = "Zepp Life 配置已保存"
+        }
+    }
+
+    /** 测试 Zepp Life 连接 */
+    fun testZeppLifeConnection(
+        account: String,
+        pass: String,
+        token: String,
+        userId: String,
+        onResult: (Boolean, String) -> Unit
+    ) {
+        val zeppManager = zeppLifeSyncManager ?: run {
+            onResult(false, "同步管理器未就绪")
+            return
+        }
+
+        viewModelScope.launch {
+            _isOperating.value = true
+            val result = zeppManager.loginOrVerify(account, pass, token, userId)
+            _isOperating.value = false
+            if (result.isSuccess) {
+                val pair = result.getOrThrow()
+                // 自动保存提取到的 token 和 userId
+                preferenceManager.saveZeppLifeConfig(account, pass, pair.second, pair.first)
+                onResult(true, "验证成功！UserId: ${pair.first}")
+            } else {
+                val msg = result.exceptionOrNull()?.localizedMessage ?: "连接失败"
+                onResult(false, msg)
+            }
+        }
+    }
+
+    /** 立即上传最新一条记录到 Zepp Life 云端 */
+    fun syncLatestToZeppLife() {
+        val zeppManager = zeppLifeSyncManager ?: return
+        viewModelScope.launch {
+            val latest = scaleRepository?.getLatestMeasurement()
+            if (latest == null) {
+                _statusMessage.value = "暂无测量记录可上传"
+                return@launch
+            }
+            _isOperating.value = true
+            val result = zeppManager.uploadMeasurement(
+                weightKg = latest.weightKg,
+                impedance = latest.impedanceOhm.toInt(),
+                timestampMillis = latest.measuredAtEpochMs
+            )
+            _isOperating.value = false
+            if (result.isSuccess) {
+                _statusMessage.value = "最新测量数据已成功同步至 Zepp Life 云端！"
+            } else {
+                _statusMessage.value = "同步失败: ${result.exceptionOrNull()?.localizedMessage}"
+            }
+        }
+    }
 
     // ── WebDAV 备份 ───────────────────────────────────────────────────────────
 

@@ -21,6 +21,7 @@ import kotlin.math.abs
 
 import com.example.dianzicheng.data.health.HealthConnectManager
 import com.example.dianzicheng.data.local.PreferenceManager
+import com.example.dianzicheng.data.sync.ZeppLifeSyncManager
 import com.example.dianzicheng.data.phicomm.PhicommS7Manager
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
@@ -41,7 +42,8 @@ class ScaleViewModel(
     private val repository: ScaleRepository,
     private val preferenceManager: PreferenceManager? = null,
     private val healthConnectManager: HealthConnectManager? = null,
-    private val phicommS7Manager: PhicommS7Manager? = null
+    private val phicommS7Manager: PhicommS7Manager? = null,
+    private val zeppLifeSyncManager: ZeppLifeSyncManager? = null
 ) : ViewModel() {
 
     /** 对外暴露的 UI 状态，使用 StateFlow 保证只读性 */
@@ -618,28 +620,51 @@ class ScaleViewModel(
     private var healthSyncJob: Job? = null
 
     /**
-     * 防抖写入 Health Connect。
+     * 防抖同步外部健康中心（Health Connect / 小米体脂秤 BLE 广播 / Zepp Life 云端）。
      * 同一次称重的"稳定保存"与"阻抗补写"会先后触发本方法，
-     * 取消前一个延迟任务，确保每次称重只向 Health Connect 写入一条最终记录。
+     * 取消前一个延迟任务，确保每次称重阻抗补全后再执行同步。
      */
     private fun scheduleHealthSync(measurement: BodyMeasurement) {
         val prefs = preferenceManager ?: return
-        val hc = healthConnectManager ?: return
         healthSyncJob?.cancel()
         healthSyncJob = viewModelScope.launch {
             delay(2000)
-            try {
-                val enabled = prefs.healthConnectEnabled.first()
-                if (!enabled) return@launch
-                if (!hc.isAvailable()) {
-                    AppLogger.w(TAG, "Health Connect 同步已开启但不可用: ${hc.unavailableReason()}")
-                } else if (!hc.hasWritePermissions()) {
-                    AppLogger.w(TAG, "Health Connect 同步已开启但缺少写入权限，请到“我的”页重新授权")
-                } else {
-                    hc.writeMeasurement(measurement)
+
+            // 1. 系统 Health Connect 同步
+            val hc = healthConnectManager
+            if (hc != null) {
+                try {
+                    val enabled = prefs.healthConnectEnabled.first()
+                    if (enabled) {
+                        if (!hc.isAvailable()) {
+                            AppLogger.w(TAG, "Health Connect 同步已开启但不可用: ${hc.unavailableReason()}")
+                        } else if (!hc.hasWritePermissions()) {
+                            AppLogger.w(TAG, "Health Connect 同步已开启但缺少写入权限，请到“我的”页重新授权")
+                        } else {
+                            hc.writeMeasurement(measurement)
+                        }
+                    }
+                } catch (e: Exception) {
+                    android.util.Log.e(TAG, "Health Connect auto sync failed", e)
                 }
-            } catch (e: Exception) {
-                android.util.Log.e(TAG, "Health Connect auto sync failed", e)
+            }
+
+            // 2. Zepp Life (华米云) 云端接口同步
+            val zepp = zeppLifeSyncManager
+            if (zepp != null) {
+                try {
+                    val zeppEnabled = prefs.zeppLifeSyncEnabled.first()
+                    if (zeppEnabled) {
+                        AppLogger.i(TAG, "称重完成，触发 Zepp Life 云端同步...")
+                        zepp.uploadMeasurement(
+                            weightKg = measurement.weightKg,
+                            impedance = measurement.impedanceOhm.toInt(),
+                            timestampMillis = measurement.measuredAtEpochMs
+                        )
+                    }
+                } catch (e: Exception) {
+                    AppLogger.e(TAG, "Zepp Life 云端同步异常: ${e.message}")
+                }
             }
         }
     }

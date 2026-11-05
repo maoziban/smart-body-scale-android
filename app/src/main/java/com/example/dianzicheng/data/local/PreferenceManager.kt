@@ -58,6 +58,21 @@ class PreferenceManager(private val context: Context) {
     /** 用户手动选择的体成分算法 ID（如 "COMMERCIAL", "ACADEMIC", "LEGACY"，默认为 "COMMERCIAL"） */
     private val SELECTED_BODY_ALGORITHM = stringPreferencesKey("selected_body_algorithm")
 
+    /** Zepp Life (原小米运动) 云端自动同步开关 */
+    private val ZEPP_LIFE_SYNC_ENABLED = booleanPreferencesKey("zepp_life_sync_enabled")
+
+    /** Zepp Life 登录账号（邮箱） */
+    private val ZEPP_LIFE_ACCOUNT = stringPreferencesKey("zepp_life_account")
+
+    /** Zepp Life 登录密码 */
+    private val ZEPP_LIFE_PASSWORD = stringPreferencesKey("zepp_life_password")
+
+    /** Zepp Life 云端 AppToken (免密直接鉴权) */
+    private val ZEPP_LIFE_APP_TOKEN = stringPreferencesKey("zepp_life_app_token")
+
+    /** Zepp Life 云端 UserId */
+    private val ZEPP_LIFE_USER_ID = stringPreferencesKey("zepp_life_user_id")
+
     // ── 读取操作（Flow） ─────────────────────────────────────────────────────
 
     /** 是否已完成设备配对，默认 false */
@@ -99,6 +114,26 @@ class PreferenceManager(private val context: Context) {
     /** 上次成功备份时间（Unix 毫秒），从未备份时为 0L */
     val lastBackupTime: Flow<Long> = context.dataStore.data
         .map { preferences -> preferences[LAST_BACKUP_TIME] ?: 0L }
+
+    /** Zepp Life 云端自动同步开关，默认关闭 */
+    val zeppLifeSyncEnabled: Flow<Boolean> = context.dataStore.data
+        .map { preferences -> preferences[ZEPP_LIFE_SYNC_ENABLED] ?: false }
+
+    /** Zepp Life 登录账号 */
+    val zeppLifeAccount: Flow<String> = context.dataStore.data
+        .map { preferences -> preferences[ZEPP_LIFE_ACCOUNT] ?: "" }
+
+    /** Zepp Life 登录密码 */
+    val zeppLifePassword: Flow<String> = context.dataStore.data
+        .map { preferences -> preferences[ZEPP_LIFE_PASSWORD] ?: "" }
+
+    /** Zepp Life AppToken */
+    val zeppLifeAppToken: Flow<String> = context.dataStore.data
+        .map { preferences -> preferences[ZEPP_LIFE_APP_TOKEN] ?: "" }
+
+    /** Zepp Life UserId */
+    val zeppLifeUserId: Flow<String> = context.dataStore.data
+        .map { preferences -> preferences[ZEPP_LIFE_USER_ID] ?: "" }
 
     // ── 写入操作（挂起函数） ─────────────────────────────────────────────────
 
@@ -168,6 +203,23 @@ class PreferenceManager(private val context: Context) {
     suspend fun saveLastBackupTime(timeMs: Long) {
         context.dataStore.edit { preferences ->
             preferences[LAST_BACKUP_TIME] = timeMs
+        }
+    }
+
+    /** 更新 Zepp Life 云端同步开关状态 */
+    suspend fun setZeppLifeSyncEnabled(enabled: Boolean) {
+        context.dataStore.edit { preferences ->
+            preferences[ZEPP_LIFE_SYNC_ENABLED] = enabled
+        }
+    }
+
+    /** 保存 Zepp Life 云端配置 */
+    suspend fun saveZeppLifeConfig(account: String, pass: String, token: String, userId: String) {
+        context.dataStore.edit { preferences ->
+            preferences[ZEPP_LIFE_ACCOUNT] = account
+            preferences[ZEPP_LIFE_PASSWORD] = pass
+            preferences[ZEPP_LIFE_APP_TOKEN] = token
+            preferences[ZEPP_LIFE_USER_ID] = userId
         }
     }
 }

@@ -10,6 +10,7 @@ import okhttp3.Credentials
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
@@ -34,6 +35,26 @@ class WebDavManager(private val dao: ScaleDao) {
             if (trimmed.endsWith("/")) "${trimmed}scale_backup.json" else "$trimmed/scale_backup.json"
         } else {
             trimmed
+        }
+    }
+
+    /** 逐级 MKCOL 创建文件所在的父目录（已存在时服务器返回 405，忽略）。 */
+    private fun ensureParentDirs(fileUrl: String, credential: String) {
+        val parsed = fileUrl.toHttpUrlOrNull() ?: return
+        val segments = parsed.pathSegments.filter { it.isNotEmpty() }.dropLast(1)
+        val builder = parsed.newBuilder().encodedPath("/")
+        for (seg in segments) {
+            builder.addPathSegment(seg)
+            val req = Request.Builder()
+                .url(builder.build())
+                .header("Authorization", credential)
+                .method("MKCOL", null)
+                .build()
+            try {
+                client.newCall(req).execute().use { Log.d("WebDavManager", "MKCOL ${req.url} -> ${it.code}") }
+            } catch (e: Exception) {
+                Log.e("WebDavManager", "MKCOL error", e)
+            }
         }
     }
 
@@ -129,12 +150,23 @@ class WebDavManager(private val dao: ScaleDao) {
                 .put(requestBody)
                 .build()
 
-            client.newCall(request).execute().use { response ->
-                if (response.isSuccessful || response.code == 201 || response.code == 204) {
-                    Result.success("备份成功！已备份 ${membersList.size} 位成员及 ${measurementsList.size} 条测量记录")
-                } else {
-                    Result.failure(Exception("备份上传失败，HTTP 状态码: ${response.code}"))
-                }
+            var code = client.newCall(request).execute().use { it.code }
+            // 404/409：父目录不存在，尝试 MKCOL 创建后重试一次
+            if (code == 404 || code == 409) {
+                ensureParentDirs(targetUrl, credential)
+                val retry = Request.Builder()
+                    .url(targetUrl)
+                    .header("Authorization", credential)
+                    .put(requestBody)
+                    .build()
+                code = client.newCall(retry).execute().use { it.code }
+            }
+            if (code in 200..299) {
+                Result.success("备份成功！已备份 ${membersList.size} 位成员及 ${measurementsList.size} 条测量记录")
+            } else if (code == 404 || code == 409) {
+                Result.failure(Exception("备份上传失败 (HTTP $code)：目标目录不存在且无法自动创建，请检查 WebDAV 地址路径（如坚果云需 https://dav.jianguoyun.com/dav/文件夹/）"))
+            } else {
+                Result.failure(Exception("备份上传失败，HTTP 状态码: $code"))
             }
         } catch (e: Exception) {
             Log.e("WebDavManager", "Backup error", e)

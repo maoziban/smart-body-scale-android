@@ -35,6 +35,7 @@ import com.example.dianzicheng.ui.theme.电子秤Theme
 import com.example.dianzicheng.data.backup.WebDavManager
 import com.example.dianzicheng.data.health.HealthConnectManager
 import com.example.dianzicheng.data.phicomm.PhicommS7Manager
+import com.example.dianzicheng.data.sync.ZeppLifeSyncManager
 
 class MainActivity : ComponentActivity() {
     private lateinit var database: AppDatabase
@@ -45,6 +46,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var healthConnectManager: HealthConnectManager
     private lateinit var webDavManager: WebDavManager
     private lateinit var phicommS7Manager: PhicommS7Manager
+    private lateinit var zeppLifeSyncManager: ZeppLifeSyncManager
 
     private val bluetoothReceiver = object : android.content.BroadcastReceiver() {
         override fun onReceive(context: android.content.Context?, intent: android.content.Intent?) {
@@ -91,6 +93,7 @@ class MainActivity : ComponentActivity() {
         healthConnectManager = HealthConnectManager(applicationContext)
         webDavManager = WebDavManager(database.scaleDao())
         phicommS7Manager = PhicommS7Manager(applicationContext)
+        zeppLifeSyncManager = ZeppLifeSyncManager(preferenceManager)
 
         // 确保系统中存在默认用户（"自己"），保证首次称重时 BMI 与身体成分正常计算
         lifecycleScope.launch {
@@ -142,7 +145,8 @@ class MainActivity : ComponentActivity() {
                                 scaleRepository,
                                 preferenceManager,
                                 healthConnectManager,
-                                phicommS7Manager
+                                phicommS7Manager,
+                                zeppLifeSyncManager
                             ) as T
                         }
                     }
@@ -164,7 +168,8 @@ class MainActivity : ComponentActivity() {
                                 preferenceManager,
                                 webDavManager,
                                 healthConnectManager,
-                                scaleRepository
+                                scaleRepository,
+                                zeppLifeSyncManager
                             ) as T
                         }
                     }
@@ -190,6 +195,7 @@ class MainActivity : ComponentActivity() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             permissions.add(Manifest.permission.BLUETOOTH_SCAN)
             permissions.add(Manifest.permission.BLUETOOTH_CONNECT)
+            permissions.add(Manifest.permission.BLUETOOTH_ADVERTISE)
             // 未声明 neverForLocation 时需要定位权限以捕获厂商广播数据包
             permissions.add(Manifest.permission.ACCESS_FINE_LOCATION)
             permissions.add(Manifest.permission.ACCESS_COARSE_LOCATION)

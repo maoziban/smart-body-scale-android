@@ -51,8 +51,12 @@ object AppLogger {
         val timestamp: Long = System.currentTimeMillis(),
         val level: Level,
         val tag: String,
-        val message: String
+        val message: String,
+        /** 全局唯一自增 ID，用于 LazyColumn 的稳定唯一 key（避免同毫秒同内容重复 key 导致崩溃） */
+        val id: Long = idGenerator.incrementAndGet()
     )
+
+    private val idGenerator = java.util.concurrent.atomic.AtomicLong(0)
 
     /** 内部可变日志流（写端），日志 UI 监听此 Flow */
     private val _entries = MutableStateFlow<List<LogEntry>>(emptyList())
