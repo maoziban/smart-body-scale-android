@@ -9,11 +9,11 @@ class MultiScalePacketParserTest {
 
     @Test
     fun testAfuProtocolNotification() {
-        // 经典的 AFU 协议数据包
+        // 经典的 AFU 协议数据包（含沃莱 FG2313UWB-D 真实阻抗 0x29D6 = 10710 -> 1071.0Ω）
         val rawData = byteArrayOf(
             0xAC.toByte(), 0x29.toByte(), 0x00.toByte(), 0x69.toByte(), 0x40.toByte(),
             0x82.toByte(), 0x02.toByte(), 0x00.toByte(), 0x05.toByte(), 0x40.toByte(),
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+            0, 0, 0, 0, 0, 0, 0, 0x29.toByte(), 0xD6.toByte(), 0
         )
 
         val result = MultiScalePacketParser.parseNotification(rawData, "0000FFB2-0000-1000-8000-00805F9B34FB")
@@ -22,7 +22,7 @@ class MultiScalePacketParserTest {
         assertEquals(82.05, result.weightKg, 0.001)
         assertTrue(result.isStable)
         assertNotNull(result.impedanceOhm)
-        assertEquals(1344.0, result.impedanceOhm!!, 0.1)
+        assertEquals(1071.0, result.impedanceOhm!!, 0.1)
     }
 
     @Test

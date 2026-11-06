@@ -6,15 +6,16 @@ package com.example.dianzicheng.data.ble
  * 负责将蓝牙 GATT 通知回调中接收到的原始字节数组（ByteArray）按照
  * AFU 私有协议格式解析为可用的业务数据（体重、阻抗）。
  *
- * 协议帧结构（以 0xAC 作为帧头标志字节）：
- *   offset+0 : 0xAC（帧头标志）
- *   offset+3 : 体重高字节（需减去基准偏移 0x68）
- *   offset+4 : 体重中字节
- *   offset+5 : 体重低字节
- *   offset+6 : 稳定标志（0x02 表示稳定锁定）
- *   offset+7 : 阻抗高字节（标准位置，优先解析）
- *   offset+8 : 阻抗低字节（标准位置，优先解析；备用方案时作为高字节）
- *   offset+9 : 备用阻抗低字节
+ * 协议帧结构（以 0xAC 作为帧头标志字节，常见 20 字节完整通知帧）：
+ *   offset+0  : 0xAC（帧头标志）
+ *   offset+3  : 体重高字节（需减去基准偏移 0x68）
+ *   offset+4  : 体重中字节
+ *   offset+5  : 体重低字节
+ *   offset+6  : 稳定标志（0x02 表示稳定锁定，0x03~0x05 为测脂中/锁定）
+ *   offset+8  : 固件特征/配置码（如恒为 0x05，非阻抗）
+ *   offset+9  : 固件特征/配置码（如恒为 0x40，非阻抗）
+ *   offset+17 : 真实生物电阻抗高字节（沃莱 FG2313UWB-D 等标准位置）
+ *   offset+18 : 真实生物电阻抗低字节（大端序，若高位单位为 0.1Ω 则需除以 10）
  */
 object AFUPacketParser {
 
@@ -71,11 +72,12 @@ object AFUPacketParser {
      * 从原始字节数组中解析生物电阻抗（BIA）数值。
      *
      * 解析策略：
-     * 1. 优先解析标准 AFU 协议位置（offset+8 高字节，offset+9 低字节，offset+7 为阻抗状态/用户标识）。
-     *    人体生物电阻抗在 100~1500 Ω 之间，要求 high byte (offset+8) > 0，杜绝单字节校验和误判。
-     * 2. 备用尝试兼容 9 字节变体（offset+7, offset+8），仅当 offset+7 在合理高位范围 [1, 5] 时尝试，
-     *    防止将阻抗状态标志 0x02 错作为阻抗高字节导致阻抗固定在 514Ω 不变。
-     * 3. 明确开路（0xFF 0xFF）或穿袜未踩电极（0x00 0x00）返回 null。
+     * 1. 优先解析 20 字节标准复合帧（沃莱 FG2313UWB-D 等）：
+     *    真实人体生物电阻抗存储在帧的第 17 与 18 字节（大端序），
+     *    实测值如 0x29D6 = 10710，采用 0.1Ω 分辨率，需除以 10 得到 1071.0Ω；
+     *    而第 8-9 字节（offset+8/offset+9）恒为 0x05 40，为固件特征码，严禁作为阻抗解析！
+     *    若第 17-18 字节为 0x00 0x00 或 0xFF 0xFF，说明未测出阻抗（穿袜未踩电极、开路），直接返回 null。
+     * 2. 备用兼容：针对非标准/精简短帧（小于 19 字节的变体），严格剔除 0x05 40 固件码干扰。
      *
      * @param data 蓝牙特征值通知回调中收到的原始字节数组。
      * @return 解析成功时返回阻抗值（单位：Ω，Double 类型）；否则返回 null。
@@ -86,7 +88,7 @@ object AFUPacketParser {
 
         // 查找 AFU 协议帧头 0xAC 的位置
         val offset = data.indexOfFirst { (it.toInt() and 0xFF) == 0xAC }
-        if (offset < 0 || data.size - offset < 9) return null
+        if (offset < 0 || data.size - offset < 7) return null
 
         // 校验是否符合 AFU 协议特征 (w3 in 0x68..0x6E)
         val w3 = data[offset + 3].toInt() and 0xFF
@@ -96,39 +98,56 @@ object AFUPacketParser {
         // AFU 协议中 status < 0x02 表示实时动态变动中，阻抗必须在示数稳定锁定或阻抗测量阶段（0x02..0x05）才能测得
         if (status < 0x02 || status > 0x05) return null
 
-        val imp7 = data[offset + 7].toInt() and 0xFF
-        val imp8 = data[offset + 8].toInt() and 0xFF
+        // 1. 优先解析 20 字节标准/复合帧（沃莱 FG2313UWB-D 等）：
+        // 真正的人体生物电阻抗存储在帧的第 17 与 18 字节（大端序），
+        // 必须优先从此位置提取；帧第 8-9 字节（offset+8/offset+9）恒为 0x05 40，为固件特征码，绝不能作为阻抗！
+        if (data.size - offset >= 19) {
+            val imp17 = data[offset + 17].toInt() and 0xFF
+            val imp18 = data[offset + 18].toInt() and 0xFF
 
-        // 若明确为 0x00 0x00 或 0xFF 0xFF，说明秤端明确指示未测得阻抗（穿袜、未踩电极、开路）
-        if ((imp7 == 0 && imp8 == 0) || (imp7 == 0xFF && imp8 == 0xFF)) {
+            // 若明确为 0x00 0x00 或 0xFF 0xFF，说明秤端明确指示未测得阻抗（穿袜、未踩电极、开路）
+            if ((imp17 == 0 && imp18 == 0) || (imp17 == 0xFF && imp18 == 0xFF)) {
+                return null
+            }
+
+            val rawImp = (imp17 shl 8) or imp18
+            // 阻抗单位换算：
+            // FG2313UWB-D 等高精度型号实测大端序 0x29D6 = 10710，单位为 0.1Ω，需除以 10 得到 1071.0Ω；
+            // 部分标准型号直接上报 1Ω 整数值（如 500 表示 500Ω）。
+            val ohm = if (rawImp > 1500) rawImp / 10.0 else rawImp.toDouble()
+            if (ohm in 100.0..1500.0) {
+                return ohm
+            }
+            // 完整帧中若第 17-18 字节未解析出合法阻抗，直接返回 null，杜绝回退到前面字节造成伪阻抗
             return null
         }
 
-        // 1. 优先解析标准 AFU 16 位阻抗大端序（高字节 offset+8，低字节 offset+9）：
-        // AFU 协议中 offset+7 为阻抗状态/用户标识（如 0x02 测量完成），真正的 16 位阻抗存储在 offset+8 和 offset+9。
-        // 人体生物电阻抗通常在 200~1200Ω 之间，高字节 imp8 在 1..5（1*256=256 ~ 5*256=1280）。
-        // 只有当 imp8 > 0 时组合 (imp8 shl 8) or imp9 才属于有效真实阻抗，且低字节随测量实时变动；
-        // 彻底杜绝了穿袜时单字节校验和误判，以及先前误取 offset+7 与 offset+8 拼出固定 514Ω 的严重缺陷！
+        // 2. 备用兼容：针对非标准精简短帧（如 9~10 字节无 17-18 字节的变体）
+        // 严禁将恒定的 0x05 40 (1344Ω) 误判为阻抗
         if (data.size - offset >= 10) {
+            val imp8 = data[offset + 8].toInt() and 0xFF
             val imp9 = data[offset + 9].toInt() and 0xFF
-            if ((imp8 == 0 && imp9 == 0) || (imp8 == 0xFF && imp9 == 0xFF)) {
+            if (imp8 == 0x05 && imp9 == 0x40) {
+                // 恒定固件标识，非阻抗，忽略
+            } else if ((imp8 == 0 && imp9 == 0) || (imp8 == 0xFF && imp9 == 0xFF)) {
                 return null
-            }
-            if (imp8 > 0) {
-                val imp89 = (imp8 shl 8) or imp9
-                if (imp89 in 100..1500) {
-                    return imp89.toDouble()
+            } else if (imp8 > 0) {
+                val rawImp = (imp8 shl 8) or imp9
+                val ohm = if (rawImp > 1500) rawImp / 10.0 else rawImp.toDouble()
+                if (ohm in 100.0..1500.0) {
+                    return ohm
                 }
             }
         }
 
-        // 2. 备用兼容：针对非标准/精简 9 字节变体（阻抗紧跟状态位，位于 offset+7 与 offset+8），
-        // 仅在 offset+7 具备合理阻抗高位（1..5）且 offset+8 为低位时才尝试，
-        // 避免阻抗状态标志 0x02 与 imp8 错拼为伪阻抗 514Ω！
-        if (imp7 in 1..5) {
-            val imp78 = (imp7 shl 8) or imp8
-            if (imp78 in 100..1500) {
-                return imp78.toDouble()
+        if (data.size - offset >= 9) {
+            val imp7 = data[offset + 7].toInt() and 0xFF
+            val imp8 = data[offset + 8].toInt() and 0xFF
+            if (imp7 in 1..5) {
+                val imp78 = (imp7 shl 8) or imp8
+                if (imp78 in 100..1500) {
+                    return imp78.toDouble()
+                }
             }
         }
 

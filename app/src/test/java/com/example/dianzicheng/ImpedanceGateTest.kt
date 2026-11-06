@@ -11,7 +11,7 @@ class ImpedanceGateTest {
 
     @Test
     fun lockedFrameImpedanceAccepted() {
-        assertTrue(ImpedanceGate.accept(1344.0, true, 70.8, 70.8))
+        assertTrue(ImpedanceGate.accept(1071.0, true, 70.8, 70.8))
     }
 
     @Test
@@ -34,11 +34,11 @@ class ImpedanceGateTest {
 
     @Test
     fun resetFramesAfterLockDoNotProduceStableResult() {
-        val lock = b(0xAC,0x29,0x80,0x69,0x14,0x90,0x02,0x00,0x05,0x40,0,0,0,0,0,0,0,0,0,0)
+        val lock = b(0xAC,0x29,0x80,0x69,0x14,0x90,0x02,0x00,0x05,0x40,0,0,0,0,0,0,0,0x29,0xD6,0)
         val reset = b(0xAC,0x29,0x02,0x00,0x01,0xE7,0x01,0xB2,0x01,0x80,0x69,0x14,0x90,0,0,0,0,0,0,0)
         val r = MultiScalePacketParser.parseNotification(lock, uuid)!!
         assertEquals(70.8, r.weightKg, 0.001)
-        assertEquals(1344.0, r.impedanceOhm!!, 0.1)
+        assertEquals(1071.0, r.impedanceOhm!!, 0.1)
         // 复位帧即使被某个协议解析出来，也不得携带可被接受的阻抗
         MultiScalePacketParser.parseNotification(reset, uuid)?.let {
             val imp = it.impedanceOhm
