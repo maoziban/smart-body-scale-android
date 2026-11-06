@@ -113,29 +113,48 @@ fun calculateTrendStatistics(
     val endStr = mmDdFormat.format(Date(latest.first.measuredAtEpochMs))
     val dateRangeText = if (startStr == endStr) startStr else "$startStr-$endStr"
 
-    val healthTip = when (metric) {
-        HistoryMetric.WEIGHT -> {
-            when {
-                change < -0.3 -> "较期初减重 ${String.format(Locale.getDefault(), "%.2f", abs(change))} kg，减脂成效显著，继续保持健康饮食与规律运动！"
-                change > 0.3 -> "较期初增加 ${String.format(Locale.getDefault(), "%.2f", change)} kg，建议关注热量摄入与日常代谢。"
-                else -> "体重处于平稳波动区间（波动在 ±0.3 kg 内），代谢稳定，维持良好！"
+    val healthTip = if (points.size == 1) {
+        when (metric) {
+            HistoryMetric.WEIGHT -> "已建立周期体重基准（${String.format(Locale.getDefault(), "%.2f", latest.second)} kg），坚持连续记录可捕捉身体代谢趋势！"
+            HistoryMetric.BMI -> {
+                val bmiVal = latest.second
+                when {
+                    bmiVal < 18.5 -> "当前 BMI ${String.format(Locale.getDefault(), "%.1f", bmiVal)}（偏瘦），建议合理补充营养与优质蛋白。"
+                    bmiVal in 18.5..23.9 -> "当前 BMI ${String.format(Locale.getDefault(), "%.1f", bmiVal)}（标准），身体状态非常理想！"
+                    bmiVal in 24.0..27.9 -> "当前 BMI ${String.format(Locale.getDefault(), "%.1f", bmiVal)}（微胖/超重），建议保持规律运动与健康饮食。"
+                    else -> "当前 BMI ${String.format(Locale.getDefault(), "%.1f", bmiVal)}（偏高），建议科学规划减脂计划并规律作息。"
+                }
+            }
+            HistoryMetric.BODY_FAT -> {
+                val fatVal = latest.second
+                "已建立周期体脂基准（${String.format(Locale.getDefault(), "%.1f", fatVal)}%），坚持赤脚规律测量记录体态变化！"
             }
         }
-        HistoryMetric.BMI -> {
-            val bmiVal = latest.second
-            when {
-                bmiVal < 18.5 -> "当前 BMI ${String.format(Locale.getDefault(), "%.1f", bmiVal)}（偏瘦），建议适当增加优质蛋白与能量摄入。"
-                bmiVal in 18.5..23.9 -> "当前 BMI ${String.format(Locale.getDefault(), "%.1f", bmiVal)}（标准），身体状态非常理想！"
-                bmiVal in 24.0..27.9 -> "当前 BMI ${String.format(Locale.getDefault(), "%.1f", bmiVal)}（微胖/超重），建议结合有氧运动合理控制体重。"
-                else -> "当前 BMI ${String.format(Locale.getDefault(), "%.1f", bmiVal)}（偏高），建议科学规划减脂计划并规律作息。"
+    } else {
+        when (metric) {
+            HistoryMetric.WEIGHT -> {
+                when {
+                    change < -0.3 -> "较期初减重 ${String.format(Locale.getDefault(), "%.2f", abs(change))} kg，减脂成效显著，继续保持健康饮食与规律运动！"
+                    change > 0.3 -> "较期初增加 ${String.format(Locale.getDefault(), "%.2f", change)} kg，建议关注热量摄入与日常代谢。"
+                    else -> "体重处于平稳波动区间（波动在 ±0.3 kg 内），代谢稳定，维持良好！"
+                }
             }
-        }
-        HistoryMetric.BODY_FAT -> {
-            val fatVal = latest.second
-            when {
-                change < -0.5 -> "体脂率较期初下降 ${String.format(Locale.getDefault(), "%.1f", abs(change))}%，肌肉线条更加紧致，体态持续向好！"
-                change > 0.5 -> "体脂率有所上升，建议适当提升力量训练与有氧代谢。"
-                else -> "当前体脂率 ${String.format(Locale.getDefault(), "%.1f", fatVal)}%，体成分指标保持相对稳定。"
+            HistoryMetric.BMI -> {
+                val bmiVal = latest.second
+                when {
+                    bmiVal < 18.5 -> "当前 BMI ${String.format(Locale.getDefault(), "%.1f", bmiVal)}（偏瘦），建议适当增加优质蛋白与能量摄入。"
+                    bmiVal in 18.5..23.9 -> "当前 BMI ${String.format(Locale.getDefault(), "%.1f", bmiVal)}（标准），身体状态非常理想！"
+                    bmiVal in 24.0..27.9 -> "当前 BMI ${String.format(Locale.getDefault(), "%.1f", bmiVal)}（微胖/超重），建议结合有氧运动合理控制体重。"
+                    else -> "当前 BMI ${String.format(Locale.getDefault(), "%.1f", bmiVal)}（偏高），建议科学规划减脂计划并规律作息。"
+                }
+            }
+            HistoryMetric.BODY_FAT -> {
+                val fatVal = latest.second
+                when {
+                    change < -0.5 -> "体脂率较期初下降 ${String.format(Locale.getDefault(), "%.1f", abs(change))}%，肌肉线条更加紧致，体态持续向好！"
+                    change > 0.5 -> "体脂率有所上升，建议适当提升力量训练与有氧代谢。"
+                    else -> "当前体脂率 ${String.format(Locale.getDefault(), "%.1f", fatVal)}%，体成分指标保持相对稳定。"
+                }
             }
         }
     }
@@ -217,7 +236,9 @@ fun HistoryScreen(
                 memberName = currentMemberName,
                 stats = stats,
                 metric = selectedMetric,
-                timeRange = selectedTimeRange
+                timeRange = selectedTimeRange,
+                member = currentMember,
+                allHistory = memberFilteredHistory
             )
         },
         onRecordsClick = onNavigateToRecords,
@@ -1404,6 +1425,336 @@ fun MemberSelectionBottomSheet(
 }
 
 /**
+ * 辅助方法：获取 BMI 对应等级
+ */
+fun getBmiCategory(bmi: Double): String = when {
+    bmi <= 0.0 -> "未知"
+    bmi < 18.5 -> "偏瘦"
+    bmi < 24.0 -> "标准"
+    bmi < 28.0 -> "超重"
+    else -> "偏高"
+}
+
+private fun formatPeriodRange(earliestMs: Long, latestMs: Long): String {
+    val calE = Calendar.getInstance().apply { timeInMillis = earliestMs }
+    val calL = Calendar.getInstance().apply { timeInMillis = latestMs }
+    val sameYear = calE.get(Calendar.YEAR) == calL.get(Calendar.YEAR)
+    val sameDay = sameYear && calE.get(Calendar.DAY_OF_YEAR) == calL.get(Calendar.DAY_OF_YEAR)
+
+    return if (sameDay) {
+        SimpleDateFormat("MM月dd日", Locale.getDefault()).format(Date(earliestMs))
+    } else if (sameYear) {
+        val f = SimpleDateFormat("MM月dd日", Locale.getDefault())
+        "${f.format(Date(earliestMs))} ~ ${f.format(Date(latestMs))}"
+    } else {
+        val f = SimpleDateFormat("yyyy/MM/dd", Locale.getDefault())
+        "${f.format(Date(earliestMs))} ~ ${f.format(Date(latestMs))}"
+    }
+}
+
+private fun generateHealthActionTips(
+    metric: HistoryMetric,
+    stats: TrendStatistics,
+    latestM: BodyMeasurement,
+    earliestM: BodyMeasurement,
+    hasLatestBia: Boolean,
+    hasEarliestBia: Boolean
+): List<String> {
+    val tips = mutableListOf<String>()
+
+    if (hasLatestBia && hasEarliestBia && stats.points.size >= 2) {
+        val fatDelta = latestM.bodyFatPct - earliestM.bodyFatPct
+        val muscleDelta = latestM.muscleKg - earliestM.muscleKg
+
+        if (fatDelta <= -0.3 && muscleDelta >= -0.2) {
+            tips.add("体脂有效下降且肌肉量维持稳定，属于高质量减脂！建议保持当前高蛋白、控糖的饮食结构。")
+        } else if (fatDelta <= -0.3 && muscleDelta < -0.2) {
+            tips.add("减重过程中伴随轻微肌肉消耗，建议适当增加抗阻力量训练，并保证每餐优质蛋白质的摄入。")
+        } else if (muscleDelta >= 0.3 && fatDelta <= 0.3) {
+            tips.add("骨骼肌稳步增长，基础代谢增强，增肌塑形进入良性循环！")
+        } else if (fatDelta >= 0.5) {
+            tips.add("体脂率有所增加，建议适度控制精制碳水和夜宵摄入，增加每周中等强度有氧运动。")
+        }
+    }
+
+    when {
+        latestM.bmi >= 24.0 -> {
+            tips.add("体质指数（BMI）处于超重/偏高区间，建议每天保持 8000 步以上活动量，少油少盐，规律进食。")
+        }
+        latestM.bmi in 1.0..18.49 -> {
+            tips.add("体质指数（BMI）偏轻，建议合理增加全谷物、坚果及优质蛋白的能量摄入，强健体魄。")
+        }
+        latestM.bmi in 18.5..23.9 -> {
+            tips.add("体质指数（BMI）处于标准健康区间，整体状态良好，保持良好自律节奏！")
+        }
+    }
+
+    tips.add("建议每天清晨空腹排便后、进食前测量，能最大限度排除进食与水分波动对趋势的干扰。")
+
+    return tips
+}
+
+/**
+ * 生成身体趋势报告分享文本
+ */
+fun buildTrendShareContent(
+    memberName: String,
+    stats: TrendStatistics,
+    metric: HistoryMetric,
+    timeRange: HistoryTimeRange,
+    member: FamilyMember? = null,
+    allHistory: List<BodyMeasurement> = emptyList()
+): String {
+    val reportTitle = when (timeRange) {
+        HistoryTimeRange.ONE_WEEK -> "身体蜕变趋势周报"
+        HistoryTimeRange.ONE_MONTH -> "身体蜕变趋势月报"
+        HistoryTimeRange.NINETY_DAYS -> "身体蜕变趋势季报"
+        HistoryTimeRange.HALF_YEAR -> "身体蜕变趋势半年报"
+    }
+
+    val memberDisplayName = buildString {
+        append(memberName.ifBlank { "家庭成员" })
+        if (member != null && member.heightCm > 0) {
+            append("（${member.heightCm.toInt()}cm）")
+        }
+    }
+
+    // 1. 无数据情况
+    if (stats.points.isEmpty()) {
+        return buildString {
+            appendLine("✨【智能体脂秤 · $reportTitle】✨")
+            appendLine("━━━━━━━━━━━━━━━━━━━━")
+            appendLine("👤 打卡成员：$memberDisplayName")
+            appendLine("📅 统计周期：${timeRange.label}")
+            appendLine("📊 观察指标：${metric.label}")
+
+            appendLine("\n🌱【周期状态提示】")
+            appendLine("${timeRange.label}内暂无新的上秤数据。")
+            appendLine("坚持每天清晨空腹上秤，数据连续才更容易捕捉身体真实的代谢走向！")
+
+            val latestAnywhere = allHistory.maxByOrNull { it.measuredAtEpochMs }
+            if (latestAnywhere != null) {
+                val lastDateStr = SimpleDateFormat("yyyy年MM月dd日 HH:mm", Locale.getDefault()).format(Date(latestAnywhere.measuredAtEpochMs))
+                val daysAgo = ((System.currentTimeMillis() - latestAnywhere.measuredAtEpochMs) / 86400000L).coerceAtLeast(0)
+                val daysText = if (daysAgo == 0L) "今天" else "${daysAgo}天前"
+                appendLine("\n📌【最近一次测量记录】")
+                appendLine("• 上次时间：$lastDateStr ($daysText)")
+                appendLine("• 记录体重：${String.format(Locale.getDefault(), "%.2f", latestAnywhere.weightKg)} kg")
+                if (latestAnywhere.bmi > 0) {
+                    appendLine("• 体质指数：BMI ${String.format(Locale.getDefault(), "%.1f", latestAnywhere.bmi)}（${getBmiCategory(latestAnywhere.bmi)}）")
+                }
+                if (latestAnywhere.impedanceOhm > 0 && latestAnywhere.bodyFatPct > 0) {
+                    appendLine("• 记录体脂：${String.format(Locale.getDefault(), "%.1f%%", latestAnywhere.bodyFatPct)}")
+                }
+            }
+
+            appendLine("\n💡【健康打卡建议】")
+            appendLine("• 建议每天早晨空腹排便后、进食前赤脚测量，数值最稳定可比")
+            appendLine("• 赤脚上秤可全面测算体脂率、肌肉量、水分率等多项深度指标")
+            appendLine("• 开启新一轮健康打卡，期待见证你的身体蜕变！")
+            appendLine("\n━━━━━━━━━━━━━━━━━━━━")
+            appendLine("🏃 智能体脂健康管理 · 持续记录你的蜕变")
+        }
+    }
+
+    // 2. 单条数据情况
+    if (stats.points.size == 1) {
+        val singlePoint = stats.latest!!
+        val m = singlePoint.first
+        val mTimeStr = SimpleDateFormat("MM月dd日 HH:mm", Locale.getDefault()).format(Date(m.measuredAtEpochMs))
+        val hasBia = m.impedanceOhm > 0.0 && m.bodyFatPct > 0.0
+
+        return buildString {
+            appendLine("✨【智能体脂秤 · $reportTitle】✨")
+            appendLine("━━━━━━━━━━━━━━━━━━━━")
+            appendLine("👤 打卡成员：$memberDisplayName")
+            appendLine("📅 统计周期：${timeRange.label}（${formatPeriodRange(m.measuredAtEpochMs, m.measuredAtEpochMs)}）")
+            appendLine("⏱ 打卡战绩：本周期已完成第 1 次测量打卡")
+            appendLine("📊 观察指标：${metric.label}")
+
+            appendLine("\n📌【当前基准数据 · ${metric.label}】")
+            appendLine("• 测量时间：$mTimeStr")
+            appendLine("• 当前数值：${metric.format(singlePoint.second)}")
+            appendLine("• 周期进展：初始测量基准已建立 🎯")
+
+            appendLine("\n🧬【身体成分快照】")
+            appendLine("• ⚖️ 测量体重：${String.format(Locale.getDefault(), "%.2f", m.weightKg)} kg")
+            if (m.bmi > 0) {
+                appendLine("• 📐 体质指数：BMI ${String.format(Locale.getDefault(), "%.1f", m.bmi)}（${getBmiCategory(m.bmi)}）")
+            }
+            if (hasBia) {
+                appendLine("• 💧 体脂率：${String.format(Locale.getDefault(), "%.1f%%", m.bodyFatPct)}")
+                appendLine("• 🥩 肌肉量：${String.format(Locale.getDefault(), "%.1f kg", m.muscleKg)}")
+                appendLine("• 🌊 水分率：${String.format(Locale.getDefault(), "%.1f%%", m.waterPct)}")
+                appendLine("• 🥚 蛋白质：${String.format(Locale.getDefault(), "%.1f%%", m.proteinPct)}")
+                appendLine("• 🦴 骨量：${String.format(Locale.getDefault(), "%.1f kg", m.boneMassKg)}")
+                appendLine("• ⚡ 生物阻抗：${m.impedanceOhm.toInt()} Ω")
+            } else {
+                appendLine("💡 提示：本次未测得生物阻抗，赤脚上秤即可解锁体脂率、肌肉量等 8 项健康指标。")
+            }
+
+            appendLine("\n💡【健康打卡建议】")
+            appendLine("已迈出周期第 1 步！持续规律打卡 2~3 天以上，即可自动生成升降趋势对比曲线与极值波动分析。")
+            appendLine("\n━━━━━━━━━━━━━━━━━━━━")
+            appendLine("🏃 智能体脂健康管理 · 持续记录你的蜕变")
+        }
+    }
+
+    // 3. 多条记录对比分析
+    val earliest = stats.earliest!!
+    val latest = stats.latest!!
+    val latestM = latest.first
+    val earliestM = earliest.first
+    val hasLatestBia = latestM.impedanceOhm > 0.0 && latestM.bodyFatPct > 0.0
+    val hasEarliestBia = earliestM.impedanceOhm > 0.0 && earliestM.bodyFatPct > 0.0
+
+    val periodDates = formatPeriodRange(earliestM.measuredAtEpochMs, latestM.measuredAtEpochMs)
+
+    val change = stats.change
+    val absChange = abs(change)
+    val changeFormatted = when {
+        change < -0.01 -> "📉 较期初下降 ${String.format(Locale.getDefault(), "%.2f", absChange)} ${metric.unit}".trim()
+        change > 0.01 -> "📈 较期初增加 +${String.format(Locale.getDefault(), "%.2f", change)} ${metric.unit}".trim()
+        else -> "⚖️ 保持平稳（与期初持平）"
+    }
+
+    val statusBadge = when (metric) {
+        HistoryMetric.WEIGHT -> when {
+            change <= -0.5 -> "🔥 减重成效显著"
+            change in -0.5..-0.1 -> "📉 体重轻度下降"
+            absChange <= 0.1 -> "⚖️ 体重平稳维持"
+            change in 0.1..0.5 -> "📈 体重阶段回升"
+            else -> "💪 体重阶段增长"
+        }
+        HistoryMetric.BODY_FAT -> when {
+            change <= -0.5 -> "🔥 纯脂高效下降"
+            change in -0.5..-0.1 -> "📉 体脂微降塑形"
+            absChange <= 0.1 -> "⚖️ 体脂保持平稳"
+            else -> "⚠️ 体脂率略有上升"
+        }
+        HistoryMetric.BMI -> when {
+            change < -0.1 -> "📉 BMI 优化下降"
+            absChange <= 0.1 -> "⚖️ BMI 保持稳定"
+            else -> "📈 BMI 略有增加"
+        }
+    }
+
+    val minVal = stats.minPoint?.second ?: latest.second
+    val maxVal = stats.maxPoint?.second ?: latest.second
+    val rangeDiff = (maxVal - minVal).coerceAtLeast(0.0)
+
+    return buildString {
+        appendLine("✨【智能体脂秤 · $reportTitle】✨")
+        appendLine("━━━━━━━━━━━━━━━━━━━━")
+        appendLine("👤 打卡成员：$memberDisplayName")
+        appendLine("📅 统计周期：${timeRange.label}（$periodDates）")
+        appendLine("⏱ 打卡战绩：累计打卡 ${stats.distinctDays} 天 · 共 ${stats.points.size} 次测量")
+        appendLine("🎯 阶段评定：$statusBadge")
+
+        appendLine("\n📊【核心指标复盘 · ${metric.label}】")
+        appendLine("• 最新数值：${metric.format(latest.second)}")
+        appendLine("• 阶段初值：${metric.format(earliest.second)}")
+        appendLine("• 阶段变化：$changeFormatted")
+        appendLine("• 极值范围：${metric.format(minVal)} ~ ${metric.format(maxVal)}（波动极差 ${metric.formatNumberOnly(rangeDiff)} ${metric.unit}）".trim())
+        appendLine("• 周期均值：${metric.format(stats.average)}")
+
+        appendLine("\n🧬【最新全身体态快照】")
+        appendLine("• ⚖️ 测量体重：${String.format(Locale.getDefault(), "%.2f", latestM.weightKg)} kg")
+        if (latestM.bmi > 0) {
+            appendLine("• 📐 体质指数：BMI ${String.format(Locale.getDefault(), "%.1f", latestM.bmi)}（${getBmiCategory(latestM.bmi)}）")
+        }
+        if (hasLatestBia) {
+            val fatDeltaText = if (hasEarliestBia) {
+                val d = latestM.bodyFatPct - earliestM.bodyFatPct
+                val s = if (d > 0) "+${String.format(Locale.getDefault(), "%.1f", d)}" else String.format(Locale.getDefault(), "%.1f", d)
+                " (较期初 $s%)"
+            } else ""
+            val muscleDeltaText = if (hasEarliestBia) {
+                val d = latestM.muscleKg - earliestM.muscleKg
+                val s = if (d > 0) "+${String.format(Locale.getDefault(), "%.1f", d)}" else String.format(Locale.getDefault(), "%.1f", d)
+                " (较期初 $s kg)"
+            } else ""
+
+            appendLine("• 💧 身体体脂：${String.format(Locale.getDefault(), "%.1f%%", latestM.bodyFatPct)}$fatDeltaText")
+            appendLine("• 🥩 骨骼肌肉：${String.format(Locale.getDefault(), "%.1f kg", latestM.muscleKg)}$muscleDeltaText")
+            appendLine("• 🌊 体内水分：${String.format(Locale.getDefault(), "%.1f%%", latestM.waterPct)}")
+            appendLine("• 🥚 蛋白质率：${String.format(Locale.getDefault(), "%.1f%%", latestM.proteinPct)}")
+            appendLine("• 🦴 骨量水平：${String.format(Locale.getDefault(), "%.1f kg", latestM.boneMassKg)}")
+            appendLine("• ⚡ 生物阻抗：${latestM.impedanceOhm.toInt()} Ω")
+        } else {
+            appendLine("💡 提示：本次未测得生物阻抗，赤脚上秤即可解锁体脂率、肌肉量等 8 项健康指标。")
+        }
+
+        appendLine("\n🏆【综合趋势评价】")
+        appendLine(stats.healthTip)
+
+        appendLine("\n💡【专属健康管理建议】")
+        val tips = generateHealthActionTips(metric, stats, latestM, earliestM, hasLatestBia, hasEarliestBia)
+        tips.forEach { tip ->
+            appendLine("• $tip")
+        }
+
+        appendLine("\n━━━━━━━━━━━━━━━━━━━━")
+        appendLine("🏃 智能体脂健康管理 · 持续记录你的蜕变")
+    }
+}
+
+/**
+ * 生成单次身体测量分享文案
+ */
+fun buildSingleMeasurementShareContent(
+    measurement: BodyMeasurement
+): String {
+    val dateFormat = SimpleDateFormat("yyyy年MM月dd日 HH:mm", Locale.getDefault())
+    val memberName = measurement.memberNameSnapshot?.takeIf { it.isNotBlank() } ?: "我"
+    val hasBia = measurement.impedanceOhm > 0.0 && measurement.bodyFatPct > 0.0
+
+    return buildString {
+        appendLine("✨【智能体脂秤 · 身体状态打卡】✨")
+        appendLine("━━━━━━━━━━━━━━━━━━━━")
+        appendLine("👤 打卡成员：$memberName")
+        appendLine("⏰ 测量时间：${dateFormat.format(Date(measurement.measuredAtEpochMs))}")
+        appendLine("\n⚖️ 测量体重：${String.format(Locale.getDefault(), "%.2f", measurement.weightKg)} kg")
+        if (measurement.bmi > 0) {
+            appendLine("📐 体质指数：BMI ${String.format(Locale.getDefault(), "%.1f", measurement.bmi)}（${getBmiCategory(measurement.bmi)}）")
+        }
+
+        if (hasBia) {
+            appendLine("\n🧬【身体成分明细】")
+            appendLine("• 💧 体脂率：${String.format(Locale.getDefault(), "%.1f%%", measurement.bodyFatPct)}")
+            appendLine("• 🥩 肌肉量：${String.format(Locale.getDefault(), "%.1f kg", measurement.muscleKg)}")
+            appendLine("• 🌊 水分率：${String.format(Locale.getDefault(), "%.1f%%", measurement.waterPct)}")
+            appendLine("• 🥚 蛋白质：${String.format(Locale.getDefault(), "%.1f%%", measurement.proteinPct)}")
+            appendLine("• 🦴 骨量：${String.format(Locale.getDefault(), "%.1f kg", measurement.boneMassKg)}")
+            appendLine("• ⚡ 生物阻抗：${measurement.impedanceOhm.toInt()} Ω")
+        } else {
+            appendLine("\n💡 提示：本次未测得生物阻抗，赤脚上秤即可解锁体脂率、肌肉量等 8 项健康成分指标。")
+        }
+
+        appendLine("\n💡【健康寄语】")
+        appendLine("每一次规律测量，都是对身体最好的倾听。坚持自律，时光终会见证你的蜕变！")
+        appendLine("\n━━━━━━━━━━━━━━━━━━━━")
+        appendLine("🏃 智能体脂健康管理 · 持续记录你的蜕变")
+    }
+}
+
+/**
+ * 触发系统分享单次身体测量
+ */
+fun shareSingleMeasurement(
+    context: android.content.Context,
+    measurement: BodyMeasurement
+) {
+    val shareContent = buildSingleMeasurementShareContent(measurement)
+    val intent = Intent().apply {
+        action = Intent.ACTION_SEND
+        putExtra(Intent.EXTRA_TEXT, shareContent)
+        type = "text/plain"
+    }
+    context.startActivity(Intent.createChooser(intent, "分享测量记录"))
+}
+
+/**
  * 触发系统分享身体趋势报告
  */
 fun shareTrendReport(
@@ -1411,25 +1762,18 @@ fun shareTrendReport(
     memberName: String,
     stats: TrendStatistics,
     metric: HistoryMetric,
-    timeRange: HistoryTimeRange
+    timeRange: HistoryTimeRange,
+    member: FamilyMember? = null,
+    allHistory: List<BodyMeasurement> = emptyList()
 ) {
-    val shareContent = buildString {
-        appendLine("【智能体脂秤 · 身体趋势简报】")
-        appendLine("👤 成员：$memberName")
-        appendLine("📅 周期：${timeRange.label} (${stats.dateRangeText})")
-        appendLine("📊 指标：${metric.label}")
-        appendLine("⏱ 累计记录：${stats.distinctDays} 天")
-        if (stats.latest != null) {
-            appendLine("📌 最新数值：${metric.format(stats.latest.second)}")
-        }
-        val sign = if (stats.change > 0) "+" else ""
-        appendLine("📈 阶段变化：$sign${String.format(Locale.getDefault(), "%.2f", stats.change)} ${metric.unit}")
-        if (stats.maxPoint != null && stats.minPoint != null) {
-            appendLine("🔺 最高：${metric.format(stats.maxPoint.second)} | 🔻 最低：${metric.format(stats.minPoint.second)}")
-        }
-        appendLine("💡 趋势评价：${stats.healthTip}")
-        appendLine("\n—— 来自智能体脂秤，关注每一天的蜕变！")
-    }
+    val shareContent = buildTrendShareContent(
+        memberName = memberName,
+        stats = stats,
+        metric = metric,
+        timeRange = timeRange,
+        member = member,
+        allHistory = allHistory
+    )
 
     val intent = Intent().apply {
         action = Intent.ACTION_SEND
@@ -1719,6 +2063,7 @@ fun MeasurementDetailScreen(
     val members by viewModel.members.collectAsState()
     val measurement = history.find { it.id == measurementId }
 
+    val context = LocalContext.current
     var showRebindDialog by remember { mutableStateOf(false) }
     val dateFormat = remember { SimpleDateFormat("yyyy年MM月dd日 HH:mm:ss", Locale.getDefault()) }
 
@@ -1741,6 +2086,15 @@ fun MeasurementDetailScreen(
                 navigationIcon = {
                     IconButton(onClick = onNavigateBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
+                    }
+                },
+                actions = {
+                    if (measurement != null) {
+                        IconButton(onClick = {
+                            shareSingleMeasurement(context, measurement)
+                        }) {
+                            Icon(Icons.Default.Share, contentDescription = "分享测量记录")
+                        }
                     }
                 }
             )
