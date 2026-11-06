@@ -7,15 +7,27 @@ package com.example.dianzicheng.data.ble
  * AFU 私有协议格式解析为可用的业务数据（体重、阻抗）。
  *
  * 协议帧结构（以 0xAC 作为帧头标志字节，常见 20 字节完整通知帧）：
+ *   【格式 1：体重稳定 / 测脂启动帧 (Byte 2 == 0x80)】
  *   offset+0  : 0xAC（帧头标志）
+ *   offset+2  : 0x80（阶段标志：体重锁定，测脂开始转圈）
  *   offset+3  : 体重高字节（需减去基准偏移 0x68）
  *   offset+4  : 体重中字节
  *   offset+5  : 体重低字节
- *   offset+6  : 稳定标志（0x02 表示稳定锁定，0x03~0x05 为测脂中/锁定）
+ *   offset+6  : 稳定标志（0x02 表示稳定锁定）
  *   offset+8  : 固件特征/配置码（如恒为 0x05，非阻抗）
  *   offset+9  : 固件特征/配置码（如恒为 0x40，非阻抗）
- *   offset+17 : 真实生物电阻抗高字节（沃莱 FG2313UWB-D 等标准位置）
- *   offset+18 : 真实生物电阻抗低字节（大端序，若高位单位为 0.1Ω 则需除以 10）
+ *   offset+17 : 实时/预读生物电阻抗高字节
+ *   offset+18 : 实时/预读生物电阻抗低字节（大端序，0.1Ω 分辨率需除以 10）
+ *
+ *   【格式 2：测脂圈圈转完 / 最终锁定完成帧 (Byte 2 == 0x02)】
+ *   offset+0  : 0xAC（帧头标志）
+ *   offset+2  : 0x02（阶段标志：测脂完成，最终锁定）
+ *   offset+3..9 : 秤端体成分参数
+ *   offset+10 : 体重高字节（需减去基准偏移 0x68）
+ *   offset+11 : 体重中字节
+ *   offset+12 : 体重低字节
+ *   offset+17 : 最终生物电阻抗高字节（如 0x29）
+ *   offset+18 : 最终生物电阻抗低字节（如 0xD6 -> 0x29D6 = 10710 -> 1071.0Ω）
  */
 object AFUPacketParser {
 
@@ -36,36 +48,38 @@ object AFUPacketParser {
 
         // 在字节数组中查找 AFU 协议帧头标志字节 0xAC 的起始偏移
         val offset = data.indexOfFirst { (it.toInt() and 0xFF) == 0xAC }
-
-        // 只要数据包含 0xAC 且剩余至少 7 字节（包含体重最高、中、低及状态位），即可解析（兼顾 7/8 字节实时动态体重包）
         if (offset < 0 || data.size - offset < 7) return null
 
-        // 读取体重三字节（分别为高、中、低字节），逐字节转为无符号整数
-        val w3 = data[offset + 3].toInt() and 0xFF  // 体重最高字节（含偏移量 0x68）
-        val w4 = data[offset + 4].toInt() and 0xFF  // 体重中字节
-        val w5 = data[offset + 5].toInt() and 0xFF  // 体重低字节
+        // 格式 1：常规/锁定初始帧（体重在 offset+3..5，w3 in 0x68..0x6E）
+        val w3 = data[offset + 3].toInt() and 0xFF
+        if (w3 in 0x68..0x6E) {
+            val w4 = data[offset + 4].toInt() and 0xFF
+            val w5 = data[offset + 5].toInt() and 0xFF
+            val status = data[offset + 6].toInt() and 0xFF
+            if (status > 0x05) return null
+            val isStable = status in 0x02..0x05
+            val rawWeight = (w3 - 0x68) * 65536 + w4 * 256 + w5
+            val weight = if (rawWeight <= 0) 0.0 else rawWeight / 1000.0
+            if (weight > 350.0) return null
+            return WeightData(weight, isStable && weight > 0.0)
+        }
 
-        // 关键特征校验：AFU 协议的 w3 必定以 0x68 为基准（0~400kg 对应 0x68..0x6E）
-        // 若超出此范围，绝非 AFU 协议帧（避免误解析 Yolanda、薄荷等其它 0xAC 报文）
-        if (w3 !in 0x68..0x6E) return null
+        // 格式 2：最终体脂测脂完成帧（Byte 2 == 0x02，体重移至 offset+10..12，w10 in 0x68..0x6E）
+        // 如：AC 29 02 00 02 15 01 E7 01 80 69 2D 90 00 00 00 00 29 D6 07
+        if (data.size - offset >= 13) {
+            val b2 = data[offset + 2].toInt() and 0xFF
+            val w10 = data[offset + 10].toInt() and 0xFF
+            if (w10 in 0x68..0x6E && b2 == 0x02) {
+                val w11 = data[offset + 11].toInt() and 0xFF
+                val w12 = data[offset + 12].toInt() and 0xFF
+                val rawWeight = (w10 - 0x68) * 65536 + w11 * 256 + w12
+                val weight = if (rawWeight <= 0) 0.0 else rawWeight / 1000.0
+                if (weight > 350.0) return null
+                return WeightData(weight, isStable = weight > 0.0)
+            }
+        }
 
-        val status = data[offset + 6].toInt() and 0xFF
-        // AFU 状态位只可能是 0x00, 0x01（实时）或 0x02（稳定锁定）；若大于 0x05 则非 AFU 帧（如 Yolanda 的 0xCA..0xCE）
-        if (status > 0x05) return null
-
-        // offset+6 字节值为 0x02~0x05 时均表示秤面已稳定锁定（0x03~0x05 为体脂阻抗测量中及完成）
-        val isStable = status in 0x02..0x05
-
-        // 还原原始体重整数值：高字节需减去协议基准偏移 0x68，再组合为 24 位整数
-        val rawWeight = (w3 - 0x68) * 65536 + w4 * 256 + w5
-
-        // 将原始整数转换为千克（精度 0.001kg），负值或零统一返回 0.0；体重 <= 0 时稳定标志强制为 false
-        val weight = if (rawWeight <= 0) 0.0 else rawWeight / 1000.0
-        if (weight > 350.0) return null
-
-        val effectiveStable = isStable && weight > 0.0
-
-        return WeightData(weight, effectiveStable)
+        return null
     }
 
     /**
@@ -73,6 +87,8 @@ object AFUPacketParser {
      *
      * 解析策略：
      * 1. 优先解析 20 字节标准复合帧（沃莱 FG2313UWB-D 等）：
+     *    - 格式 1（Byte 2 == 0x80）：体重锁定时预读阻抗；
+     *    - 格式 2（Byte 2 == 0x02）：体脂测脂圈圈转完后的最终稳定阻抗；
      *    真实人体生物电阻抗存储在帧的第 17 与 18 字节（大端序），
      *    实测值如 0x29D6 = 10710，采用 0.1Ω 分辨率，需除以 10 得到 1071.0Ω；
      *    而第 8-9 字节（offset+8/offset+9）恒为 0x05 40，为固件特征码，严禁作为阻抗解析！
@@ -90,15 +106,22 @@ object AFUPacketParser {
         val offset = data.indexOfFirst { (it.toInt() and 0xFF) == 0xAC }
         if (offset < 0 || data.size - offset < 7) return null
 
-        // 校验是否符合 AFU 协议特征 (w3 in 0x68..0x6E)
         val w3 = data[offset + 3].toInt() and 0xFF
-        if (w3 !in 0x68..0x6E) return null
+        val isFormat1 = w3 in 0x68..0x6E
+        val isFormat2 = data.size - offset >= 13 &&
+                (data[offset + 10].toInt() and 0xFF) in 0x68..0x6E &&
+                (data[offset + 2].toInt() and 0xFF) == 0x02
 
-        val status = data[offset + 6].toInt() and 0xFF
-        // AFU 协议中 status < 0x02 表示实时动态变动中，阻抗必须在示数稳定锁定或阻抗测量阶段（0x02..0x05）才能测得
-        if (status < 0x02 || status > 0x05) return null
+        // 必须符合格式 1 或格式 2 的 AFU 特征
+        if (!isFormat1 && !isFormat2) return null
 
-        // 1. 优先解析 20 字节标准/复合帧（沃莱 FG2313UWB-D 等）：
+        if (isFormat1) {
+            val status = data[offset + 6].toInt() and 0xFF
+            // AFU 格式 1 中 status < 0x02 表示实时动态变动中，阻抗必须在示数稳定锁定或阻抗测量阶段（0x02..0x05）才能测得
+            if (status < 0x02 || status > 0x05) return null
+        }
+
+        // 1. 优先解析 20 字节标准/复合帧（沃莱 FG2313UWB-D 格式 1 与格式 2 均适用）：
         // 真正的人体生物电阻抗存储在帧的第 17 与 18 字节（大端序），
         // 必须优先从此位置提取；帧第 8-9 字节（offset+8/offset+9）恒为 0x05 40，为固件特征码，绝不能作为阻抗！
         if (data.size - offset >= 19) {
