@@ -883,6 +883,7 @@ class BleScaleClient(private val context: Context) {
         _weight.value = 0.0
         _isStable.value = false
         _impedance.value = 0.0
+        af45RecordStreak = 0
     }
 
     // -------------------------------------------------------------------------
@@ -1131,6 +1132,12 @@ class BleScaleClient(private val context: Context) {
     /** 本次测量是否已发送过 0x1F 完成确认，避免对重复的稳定帧反复回复。 */
     private var qnFinishAckSent = false
 
+    /** AFU-B1 连续收到的 AF45 0x54 历史记录帧数；收到实时体重帧即清零。 */
+    private var af45RecordStreak = 0
+
+    /** 连续多少帧 0x54 记录帧（约 700 ms 一帧）视为测量结束。 */
+    private val AF45_RECORD_STREAK_END = 3
+
     /**
      * 向 QN 秤的写入特征（FFE3 / FFE2 / FFF2）写入一帧数据。
      *
@@ -1229,8 +1236,29 @@ class BleScaleClient(private val context: Context) {
         val hexStr = data.joinToString(" ") { "%02X".format(it) }
         // 薄荷健康 / 轻牛 / 沃莱 (QN) 协议：必须对 0x12 / 0x14 / 0x10 帧回复 ACK，秤才会继续推送数据
         val qnResult = handleQnFrame(data, charUuid, hexStr)
-        val scaleResult = if (qnResult.first) qnResult.second
+        val rawResult = if (qnResult.first) qnResult.second
             else MultiScalePacketParser.parseNotification(data, charUuid, preferredModel)
+        // AFU-B1 AF45：测量结束后秤只循环发送 0x54 历史记录帧（测量中只会零星穿插 1 帧）。
+        // 连续收到 AF45_RECORD_STREAK_END 帧即视为测量结束 / 已下秤，按空载帧处理以立即归零；
+        // 否则记录帧每 ~700 ms 一包会不断续期 2.5 s 看门狗，界面一直停留在锁定读数上。
+        val scaleResult = when {
+            rawResult != null && rawResult.protocolName == MultiScalePacketParser.PROTOCOL_AFU_B1_AF45 -> {
+                af45RecordStreak = 0
+                rawResult
+            }
+            MultiScalePacketParser.isAfuB1Af45RecordFrame(data) -> {
+                af45RecordStreak++
+                if (af45RecordStreak == AF45_RECORD_STREAK_END) {
+                    MultiScalePacketParser.ParsedScaleData(
+                        weightKg = 0.0,
+                        isStable = false,
+                        impedanceOhm = null,
+                        protocolName = "${MultiScalePacketParser.PROTOCOL_AFU_B1_AF45} 测量结束"
+                    )
+                } else null
+            }
+            else -> rawResult
+        }
 
         val parsedDetails = buildString {
             if (scaleResult != null) {

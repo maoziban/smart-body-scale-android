@@ -13,6 +13,7 @@ import java.util.UUID
  * 2. [SIG_STANDARD]：蓝牙 SIG 国际通用标准（Weight Scale Service 0x181D / Body Composition Service 0x181B）
  * 3. [XIAOMI]：小米/米家体脂秤与体重秤（广播 Service Data 0x181B / 0x181D 及 GATT 通知）
  * 4. [OKOK_CHIPSEA]：OKOK / 芯海科技 (Chipsea) / 香山等白牌体脂秤（UUID 0xFFF0 / 0xFFE0，0x10/0xCF/0xAA 帧）
+ * 5. [AFU-B1(AF45)]：AFU-BH-TZ-B1 的 AF 45 20 字节帧（仅体重，byte5 bit7 锁定，sum&0x1F 校验）
  */
 object MultiScalePacketParser {
 
@@ -107,6 +108,12 @@ object MultiScalePacketParser {
         if (data.isEmpty()) return null
 
         val uuidStr = charUuid?.uppercase() ?: ""
+
+        // 优先分支 0：AFU-B1 的 AF 45 实时体重帧（帧头 + 长度 + 帧类型 0x51 + 校验，不与任何现有协议冲突）。
+        // 必须放在 parseAfu 之前：AFUPacketParser 会在整帧中搜索 0xAC，AF45 帧尾部偶发 0xAC 时可能被误判。
+        parseAfuB1Af45(data)?.let { return it }
+        // 其余通过校验的 AF45 帧（0x54 历史记录帧等）不产生本次测量值，也不交给其它协议误判
+        if (isValidAf45Frame(data)) return null
 
         // 优先分支 1：用户明确指定了偏好型号，优先执行该型号的专属解析
         when (preferredModel) {
@@ -504,6 +511,80 @@ object MultiScalePacketParser {
             isStable = weightData.isStable && weightData.weightKg >= 3.0,
             impedanceOhm = impedance,
             protocolName = "AFU"
+        )
+    }
+
+    // -------------------------------------------------------------------------
+    // 协议 1b：AFU-B1 AF 45 木材帧（AFU-BH-TZ-B1 的另一套报文，与 QN/FFB1 那套并存）
+    // -------------------------------------------------------------------------
+
+    /** AF45 实时体重帧命中时的协议名。 */
+    const val PROTOCOL_AFU_B1_AF45 = "AFU-B1(AF45)"
+
+    /** AF45 帧类型（byte 18）：实时体重帧。 */
+    private const val AF45_TYPE_WEIGHT = 0x51
+
+    /** AF45 帧类型（byte 18）：秤内存储的上一次测量结果（含 RTC 时间戳），周期性重复广播。 */
+    private const val AF45_TYPE_RECORD = 0x54
+
+    /**
+     * AF45 帧基础校验：长度 20、帧头 AF 45、byte 19 低 5 位 == sum(bytes[2..18]) 低 5 位。
+     * 校验算法由 2026-11-10 日志中 12 种不同帧全部验证（byte 19 高 3 位实测恒为 0，不参与比较）。
+     */
+    private fun isValidAf45Frame(data: ByteArray): Boolean {
+        if (data.size != 20) return false
+        if ((data[0].toInt() and 0xFF) != 0xAF || (data[1].toInt() and 0xFF) != 0x45) return false
+        var sum = 0
+        for (i in 2..18) sum += data[i].toInt() and 0xFF
+        return (sum and 0x1F) == (data[19].toInt() and 0x1F)
+    }
+
+    /**
+     * 是否为 AF45 历史记录帧（byte 18 == 0x54）。
+     *
+     * 结构：[2] 00、[3..6] Unix 时间戳 LE（秤内 RTC）、[7..8] 体重 LE g、[9] 08、[10] 0x80（已锁定）、[11..14] 未知。
+     * 它是秤内保存的**上一次**结果：踩秤前就会出现、测量中也会穿插，绝不能当作本次测量；
+     * 但测量结束后秤会连续只发此帧，[BleScaleClient] 据此判定"测量结束 / 已下秤"。
+     */
+    fun isAfuB1Af45RecordFrame(data: ByteArray): Boolean =
+        isValidAf45Frame(data) && (data[18].toInt() and 0xFF) == AF45_TYPE_RECORD
+
+    /**
+     * 解析 AFU-BH-TZ-B1 的 AF 45 20 字节实时体重帧（byte 18 == 0x51）。
+     *
+     * 已确认字段：
+     * - [0..1]   : AF 45 帧头
+     * - [2..3]   : 体重低 16 位，小端序，单位 g（÷1000 = kg，分辨率 0.05 kg）
+     * - [4] bit0 : 体重第 17 位（推断，见函数内注释）；其余位实测恒为 0x08
+     * - [5] bit7 : 稳定锁定位（测量中 0x00 约 120 ms 一包，锁定后 0x80 约 700 ms 一包）
+     * - [6..11]  : 02 80 01 88 38 4B（含义未知，可能是用户档案，**不作为识别条件**）
+     * - [18]     : 帧类型 0x51
+     * - [19]     : 校验，低 5 位 = sum(bytes[2..18]) & 0x1F
+     *
+     * 帧内无阻抗字段，因此本协议只测体重，impedanceOhm 恒为 null。
+     *
+     * 量程：3–250 kg 视为站秤；< 3 kg（空载漂移/下秤）返回 0.0 kg 以触发 UI 立即归零；> 250 kg 视为非法帧。
+     */
+    fun parseAfuB1Af45(data: ByteArray): ParsedScaleData? {
+        if (!isValidAf45Frame(data)) return null
+        if ((data[18].toInt() and 0xFF) != AF45_TYPE_WEIGHT) return null
+
+        // [2..3] 小端 16 位 + [4] bit0 作为第 17 位（单位 g）。
+        // 依据：16 位上限仅 65.535 kg，量程 3–250 kg 的秤不可能只用 16 位；首份样本中站立读数爬升到 65.45 后
+        // 变为 1.56 / 2.56 / 0.61 … 并最终以 0.66 锁定，同时 byte4 由 08 变 09——按进位解释即 66–68 kg 收敛到 66.20 kg。
+        val raw = (data[2].toInt() and 0xFF) or
+                  ((data[3].toInt() and 0xFF) shl 8) or
+                  ((data[4].toInt() and 0x01) shl 16)
+        val weightKg = raw / 1000.0
+        if (weightKg > 250.0) return null
+
+        val effectiveKg = if (weightKg < 3.0) 0.0 else weightKg
+        val locked = (data[5].toInt() and 0x80) != 0
+        return ParsedScaleData(
+            weightKg = effectiveKg,
+            isStable = locked && effectiveKg >= 3.0,
+            impedanceOhm = null,
+            protocolName = PROTOCOL_AFU_B1_AF45
         )
     }
 
