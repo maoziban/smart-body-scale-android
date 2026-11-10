@@ -5,6 +5,7 @@ import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 
 import androidx.datastore.preferences.core.stringPreferencesKey
@@ -78,22 +79,27 @@ class PreferenceManager(private val context: Context) {
     /** 是否已完成设备配对，默认 false */
     val isPairingComplete: Flow<Boolean> = context.dataStore.data
         .map { preferences -> preferences[PAIRING_COMPLETE] ?: false }
+        .distinctUntilChanged()
 
     /** 用户手动选择的体脂秤型号 ID，默认为 "AUTO" */
     val selectedScaleModel: Flow<String> = context.dataStore.data
         .map { preferences -> preferences[SELECTED_SCALE_MODEL] ?: "AUTO" }
+        .distinctUntilChanged()
 
     /** 用户手动选择的体成分算法 ID，默认为 "COMMERCIAL" */
     val selectedBodyAlgorithm: Flow<String> = context.dataStore.data
         .map { preferences -> preferences[SELECTED_BODY_ALGORITHM] ?: "COMMERCIAL" }
+        .distinctUntilChanged()
 
     /** 已配对的蓝牙 MAC 地址，未配对时为 null */
     val pairedMac: Flow<String?> = context.dataStore.data
         .map { preferences -> preferences[PAIRED_MAC] }
+        .distinctUntilChanged()
 
     /** 已配对的蓝牙设备名称，未配对时为 null */
     val pairedDeviceName: Flow<String?> = context.dataStore.data
         .map { preferences -> preferences[PAIRED_DEVICE_NAME] }
+        .distinctUntilChanged()
 
     /** Health Connect 自动同步是否已开启，默认 false */
     val healthConnectEnabled: Flow<Boolean> = context.dataStore.data

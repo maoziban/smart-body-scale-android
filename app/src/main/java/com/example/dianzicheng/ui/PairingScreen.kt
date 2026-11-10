@@ -87,12 +87,14 @@ fun PairingScreen(
     }
 
     fun hasBlePermissions(): Boolean {
+        val hasLocation = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
+            ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_SCAN) == PackageManager.PERMISSION_GRANTED &&
-            ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED
+            ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED &&
+            hasLocation
         } else {
-            ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
-            ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+            hasLocation
         }
     }
 
@@ -257,12 +259,16 @@ fun PairingScreen(
             if (!uiState.isBluetoothEnabled) {
                 BluetoothDisabledCard(
                     onEnableBluetooth = {
-                        val intent = Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE)
-                        context.startActivity(intent)
+                        try {
+                            val intent = Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE)
+                            context.startActivity(intent)
+                        } catch (_: Exception) {
+                            context.startActivity(Intent(Settings.ACTION_BLUETOOTH_SETTINGS))
+                        }
                     }
                 )
                 return@Scaffold
-            } else if (!uiState.isLocationEnabled && Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+            } else if (!uiState.isLocationEnabled) {
                 LocationDisabledCard(
                     onEnableLocation = {
                         val intent = Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS)

@@ -170,11 +170,14 @@ class BleScaleClient(private val context: Context) {
      */
     fun detectMatchedModel(deviceName: String?, scanRecord: android.bluetooth.le.ScanRecord?): ScaleModel {
         val name = deviceName ?: ""
-        // 优先检查 Service UUID 是否包含 AFU 专属服务 (0xFFB0)，或设备名明确包含 AFU/WL-TZ/TZ-A1
+        // 优先检查 Service UUID 是否包含 AFU 专属服务 (0xFFB0)，或设备名明确包含 AFU/WL-TZ/TZ-A1/TZ-B1/阿福
         if (scanRecord?.serviceUuids?.any { it.uuid.toString().uppercase().contains("FFB0") } == true ||
             name.contains("AFU", ignoreCase = true) ||
+            name.contains("阿福", ignoreCase = true) ||
             name.contains("WL-TZ", ignoreCase = true) ||
-            name.contains("TZ-A1", ignoreCase = true)) {
+            name.contains("TZ-A1", ignoreCase = true) ||
+            name.contains("TZ-B1", ignoreCase = true) ||
+            name.equals("A1", ignoreCase = true)) {
             return ScaleModel.AFU_PROTOCOL
         }
 
@@ -273,8 +276,13 @@ class BleScaleClient(private val context: Context) {
         // 5. 称重设备常见品牌与关键词精确匹配（覆盖主流与小众品牌）
         val nameMatched = deviceName?.let { name ->
             name.contains("AFU", ignoreCase = true) ||
+            name.contains("阿福", ignoreCase = true) ||
             name.contains("WL-TZ", ignoreCase = true) ||
             name.contains("TZ-A1", ignoreCase = true) ||
+            name.contains("TZ-B1", ignoreCase = true) ||
+            name.equals("A1", ignoreCase = true) ||
+            name.startsWith("A1-", ignoreCase = true) ||
+            name.startsWith("A1_", ignoreCase = true) ||
             name.contains("Scale", ignoreCase = true) ||
             name.contains("Weight", ignoreCase = true) ||
             name.contains("体脂", ignoreCase = true) ||
@@ -425,10 +433,10 @@ class BleScaleClient(private val context: Context) {
                 // 过滤规则：
                 // 1. 确认为体脂秤的设备：加入列表；
                 // 2. 属于已知非秤厂商：严禁加入任何列表，杜绝视觉污染与误导；
-                // 3. 未确认为秤的设备：仅当有明确设备名（非匿名空串）且信号较强 (RSSI >= -75 dBm) 时，作为逃生兜底进入折叠列表。
+                // 3. 未确认为秤的设备：仅当有明确设备名（非匿名空串）且信号合理 (RSSI >= -90 dBm) 时，作为逃生兜底进入折叠列表。
                 val shouldInclude = if (isScale) {
                     true
-                } else if (!isBlacklistedVendor && !parsedName.isNullOrBlank() && result.rssi >= -75) {
+                } else if (!isBlacklistedVendor && !parsedName.isNullOrBlank() && result.rssi >= -90) {
                     true
                 } else {
                     false
@@ -443,7 +451,8 @@ class BleScaleClient(private val context: Context) {
                                    parsedName?.startsWith("MISCALE", ignoreCase = true) == true ||
                                    parsedName?.contains("小米", ignoreCase = true) == true ||
                                    parsedName?.contains("米家", ignoreCase = true) == true
-                    val isBroadcast = advScaleData != null || isXiaomi
+                    // 仅当明确为小米广播秤，或广播包已直接解析出有效实时体重 (>= 3.0kg) 且非 AFU GATT 协议时，才标记为免连接广播秤
+                    val isBroadcast = isXiaomi || (advScaleData != null && advScaleData.weightKg >= 3.0 && matchedModel != ScaleModel.AFU_PROTOCOL)
 
                     val defaultName = if (isScale) {
                         if (advScaleData != null && advScaleData.protocolName.isNotBlank()) {
@@ -475,6 +484,8 @@ class BleScaleClient(private val context: Context) {
                         currentList[existingIndex] = item
                     } else {
                         currentList.add(item)
+                        val uuids = result.scanRecord?.serviceUuids?.joinToString(",") { it.uuid.toString().take(8) } ?: "none"
+                        AppLogger.i(TAG, "配对扫描发现设备: $name [${device.address}], isScale=$isScale, model=${matchedModel.id}, rssi=${result.rssi}, uuids=$uuids")
                     }
                     // 排序规则：
                     // 1. 正在踩秤称重中（含有实时体重数据 > 0）的设备排在最最顶端！
@@ -512,9 +523,23 @@ class BleScaleClient(private val context: Context) {
             if (isScaleAdvertisement(result)) {
                 val name = device.name ?: result.scanRecord?.deviceName ?: parseNameFromBytes(result.scanRecord?.bytes) ?: "体脂秤设备 (${device.address.takeLast(5)})"
 
-                // 尝试直接从广播数据解析（如小米秤、免配对广播秤即踩即读）
-                val advScaleData = MultiScalePacketParser.parseAdvertisement(result.scanRecord, preferredModel)
-                if (advScaleData != null) {
+                val matchedModel = detectMatchedModel(name, result.scanRecord)
+                val isXiaomi = matchedModel == ScaleModel.XIAOMI_SCALE_1 || matchedModel == ScaleModel.XIAOMI_SCALE_2 ||
+                               name.startsWith("MIBFS", ignoreCase = true) ||
+                               name.startsWith("MISCALE", ignoreCase = true) ||
+                               name.contains("小米", ignoreCase = true) ||
+                               name.contains("米家", ignoreCase = true)
+
+                // 尝试直接从广播数据解析（如小米秤、免配对广播秤即踩即读；AFU 系列必走 GATT，绝不走广播分支）
+                val advScaleData = if (matchedModel == ScaleModel.AFU_PROTOCOL) null
+                    else MultiScalePacketParser.parseAdvertisement(result.scanRecord, preferredModel)
+                val isBroadcastPacket = advScaleData != null && (
+                    isXiaomi ||
+                    advScaleData.protocolName.contains("Xiaomi", ignoreCase = true) ||
+                    advScaleData.weightKg > 0.0 ||
+                    _connectionState.value == ConnectionState.MEASURING
+                )
+                if (isBroadcastPacket && advScaleData != null) {
                     // Bug #25 修复：只要 parseAdvertisement 返回非 null，就判定为广播秤，统一在此处理。
                     // 原条件 "advScaleData.weightKg > 0.0" 会导致离秤 0kg 包 fall-through 到下方 GATT 连接逻辑，
                     // 从而错误地对广播秤发起 GATT 连接。
@@ -735,7 +760,28 @@ class BleScaleClient(private val context: Context) {
         } catch (e: Exception) {}
         bluetoothGatt = null
 
-        AppLogger.i(TAG, "启动 BLE 扫描 (isPairingMode: $isPairingMode, pairedMac: $lastPairedMac)...")
+        val hasLocationPerm = androidx.core.content.ContextCompat.checkSelfPermission(
+            context, android.Manifest.permission.ACCESS_FINE_LOCATION
+        ) == android.content.pm.PackageManager.PERMISSION_GRANTED ||
+            androidx.core.content.ContextCompat.checkSelfPermission(
+                context, android.Manifest.permission.ACCESS_COARSE_LOCATION
+            ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+        val hasScanPerm = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+            androidx.core.content.ContextCompat.checkSelfPermission(
+                context, android.Manifest.permission.BLUETOOTH_SCAN
+            ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+        } else true
+        val locEnabled = isLocationEnabled()
+        AppLogger.i(
+            TAG,
+            "启动 BLE 扫描 (isPairingMode: $isPairingMode, pairedMac: $lastPairedMac, scanPerm: $hasScanPerm, locPerm: $hasLocationPerm, locEnabled: $locEnabled)..."
+        )
+        if (!hasScanPerm || !hasLocationPerm) {
+            AppLogger.w(TAG, "缺少蓝牙扫描或定位权限 (scanPerm=$hasScanPerm, locPerm=$hasLocationPerm)，系统可能静默拦截 BLE 广播结果！")
+        }
+        if (!locEnabled) {
+            AppLogger.w(TAG, "系统定位服务未开启 (locEnabled=false)，部分机型将无法收到 BLE 扫描结果！")
+        }
         _connectionState.value = ConnectionState.SCANNING
 
         // 构建低延迟与高召回扫描参数配置（针对 MIUI/HyperOS/ColorOS/OriginOS 启用 Aggressive 模式）
@@ -989,16 +1035,10 @@ class BleScaleClient(private val context: Context) {
         for (service in gatt.services) {
             val sUuid = service.uuid.toString().uppercase()
             // 仅对 AFU 私有服务 (0xFFB0) 发送 AFU 私有协议握手包，
-            // 严禁向 OKOK、SIG 标准或其它未知厂商特征发送，以防远端 MCU 异常或断连
+            // 严禁向 OKOK、SIG 标准或其它未知厂商特征发送，以防远端 MCU 异常或断连。
+            // 只要设备包含 0xFFB0 服务（AFU 专属服务），无论用户偏好选了自动、AFU 还是薄荷/沃莱，都必须发送握手包激活 MCU！
             val isAfuService = sUuid.contains("FFB0") || sUuid.contains("0000FFB0")
             if (!isAfuService) continue
-
-            // 仅当用户明确将偏好型号手动设置为“薄荷健康/沃莱(非AFU)”时才跳过；
-            // 只要设备包含 0xFFB0 服务（AFU 专属服务），哪怕设备名称带有 QN- 或 Yolanda，也必须发送握手包激活 MCU！
-            if (preferredModel == ScaleModel.BOOHEE_YOLANDA) {
-                AppLogger.d(TAG, "当前偏好型号指定为薄荷健康/沃莱非AFU协议，跳过 AFU 握手包")
-                continue
-            }
 
             for (char in service.characteristics) {
                 val props = char.properties
@@ -1181,7 +1221,7 @@ class BleScaleClient(private val context: Context) {
     private fun handleQnFrame(data: ByteArray, charUuid: String, hexStr: String): Pair<Boolean, MultiScalePacketParser.ParsedScaleData?> {
         val none = Pair(false, null as MultiScalePacketParser.ParsedScaleData?)
         if (preferredModel != ScaleModel.AUTO && preferredModel != ScaleModel.BOOHEE_YOLANDA &&
-            preferredModel != ScaleModel.OTHER_GENERIC) return none
+            preferredModel != ScaleModel.AFU_PROTOCOL && preferredModel != ScaleModel.OTHER_GENERIC) return none
         if (!QnProtocol.isNotifyUuid(charUuid) || !QnProtocol.isQnFrame(data)) return none
 
         val cmd = data[0].toInt() and 0xFF

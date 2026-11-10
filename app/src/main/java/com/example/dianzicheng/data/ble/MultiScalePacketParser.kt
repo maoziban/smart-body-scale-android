@@ -213,6 +213,17 @@ object MultiScalePacketParser {
     ): ParsedScaleData? {
         if (rawBytes == null && bcsServiceData == null && wssServiceData == null) return null
 
+        // 优先检查是否为 AFU 系列设备名称：AFU/沃莱/阿福体脂秤均为双向 GATT 交互设备（需握手激活与通知订阅），绝非广播秤
+        val resolvedName = deviceName ?: parseNameFromBytes(rawBytes) ?: ""
+        if (resolvedName.contains("AFU", ignoreCase = true) ||
+            resolvedName.contains("阿福", ignoreCase = true) ||
+            resolvedName.contains("WL-TZ", ignoreCase = true) ||
+            resolvedName.contains("TZ-A1", ignoreCase = true) ||
+            resolvedName.contains("TZ-B1", ignoreCase = true) ||
+            resolvedName.equals("A1", ignoreCase = true)) {
+            return null
+        }
+
         // 若广播中明确声明包含 AFU 服务 UUID (FFB0)，则必为双向 GATT 交互秤（需 FFB1 握手与 FFB2 订阅），绝不可作为广播秤处理
         if (serviceUuidStrings.any { it.uppercase().contains("FFB0") }) {
             return null

@@ -48,15 +48,22 @@ class MainActivity : ComponentActivity() {
     private lateinit var phicommS7Manager: PhicommS7Manager
     private lateinit var zeppLifeSyncManager: ZeppLifeSyncManager
 
+    private var scaleViewModelRef: ScaleViewModel? = null
+
     private val bluetoothReceiver = object : android.content.BroadcastReceiver() {
         override fun onReceive(context: android.content.Context?, intent: android.content.Intent?) {
             if (intent?.action == android.bluetooth.BluetoothAdapter.ACTION_STATE_CHANGED) {
+                scaleViewModelRef?.checkBluetoothAndLocationState()
                 val state = intent.getIntExtra(android.bluetooth.BluetoothAdapter.EXTRA_STATE, android.bluetooth.BluetoothAdapter.ERROR)
                 if (state == android.bluetooth.BluetoothAdapter.STATE_ON) {
-                    // 蓝牙打开后，若已记住设备且当前处于 IDLE，自动恢复扫描
-                    if (!bleClient.lastPairedMac.isNullOrEmpty() && bleClient.connectionState.value == BleScaleClient.ConnectionState.IDLE) {
+                    // 蓝牙打开后，若处于配对模式或已记住设备且当前处于 IDLE，自动恢复扫描
+                    if (bleClient.isPairingMode && bleClient.connectionState.value == BleScaleClient.ConnectionState.IDLE) {
+                        bleClient.startPairingScan()
+                    } else if (!bleClient.lastPairedMac.isNullOrEmpty() && bleClient.connectionState.value == BleScaleClient.ConnectionState.IDLE) {
                         bleClient.startScan()
                     }
+                } else if (state == android.bluetooth.BluetoothAdapter.STATE_OFF) {
+                    bleClient.stopScan()
                 }
             }
         }
@@ -65,14 +72,34 @@ class MainActivity : ComponentActivity() {
     private val requestPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { permissions ->
-        val denied = permissions.filter { !it.value }.keys
-        if (denied.isNotEmpty()) {
-            // 有权限被拒绝：提示用户前往系统设置手动开启，否则蓝牙功能无法使用
+        val btDenied = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            permissions[Manifest.permission.BLUETOOTH_SCAN] == false ||
+            permissions[Manifest.permission.BLUETOOTH_CONNECT] == false
+        } else {
+            false
+        }
+        val locGranted = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
+            ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+
+        if (btDenied) {
             android.widget.Toast.makeText(
                 this,
-                "蓝牙权限被拒绝，请前往「设置 → 应用 → 权限」手动开启蓝牙权限，否则无法搜索体脂秤",
+                "附近设备（蓝牙）权限被拒绝，请前往「设置 → 应用 → 权限」开启，否则无法搜索体脂秤",
                 android.widget.Toast.LENGTH_LONG
             ).show()
+        } else if (!locGranted) {
+            android.widget.Toast.makeText(
+                this,
+                "定位权限未开启，请前往「设置 → 应用 → 权限」开启位置信息权限，否则系统将屏蔽体脂秤蓝牙广播",
+                android.widget.Toast.LENGTH_LONG
+            ).show()
+        } else {
+            // 权限已授予：若当前处于配对模式或尚未绑定设备，立即启动配对扫描；若已绑定设备则恢复常规扫描
+            if (bleClient.isPairingMode || bleClient.lastPairedMac.isNullOrEmpty()) {
+                bleClient.startPairingScan()
+            } else if (bleClient.connectionState.value == BleScaleClient.ConnectionState.IDLE) {
+                bleClient.startScan()
+            }
         }
     }
 
@@ -110,9 +137,11 @@ class MainActivity : ComponentActivity() {
             preferenceManager.pairedMac.collect { mac ->
                 bleClient.lastPairedMac = mac  // null clears memory, preventing stale reconnect
                 if (mac.isNullOrEmpty()) {
-                    bleClient.disconnectAndReset()
-                } else {
-                    bleClient.isPairingMode = false
+                    // 若当前正处于手动配对扫描模式，绝不调用 disconnectAndReset() 中断配对扫描
+                    if (!bleClient.isPairingMode) {
+                        bleClient.disconnectAndReset()
+                    }
+                } else if (!bleClient.isPairingMode) {
                     if (bleClient.connectionState.value == BleScaleClient.ConnectionState.IDLE && bleClient.isBluetoothEnabled()) {
                         bleClient.startScan()
                         phicommS7Manager.startListening()
@@ -151,6 +180,7 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                 )
+                scaleViewModelRef = scaleViewModel
                 val historyViewModel: HistoryViewModel = viewModel(
                     factory = object : ViewModelProvider.Factory {
                         @Suppress("UNCHECKED_CAST")
@@ -195,7 +225,6 @@ class MainActivity : ComponentActivity() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             permissions.add(Manifest.permission.BLUETOOTH_SCAN)
             permissions.add(Manifest.permission.BLUETOOTH_CONNECT)
-            permissions.add(Manifest.permission.BLUETOOTH_ADVERTISE)
             // 未声明 neverForLocation 时需要定位权限以捕获厂商广播数据包
             permissions.add(Manifest.permission.ACCESS_FINE_LOCATION)
             permissions.add(Manifest.permission.ACCESS_COARSE_LOCATION)
@@ -215,10 +244,15 @@ class MainActivity : ComponentActivity() {
 
     override fun onStart() {
         super.onStart()
-        // 回到前台：如果已记住设备且当前为空闲状态，自动恢复扫描以保持踏秤即连；同时恢复局域网监听
-        if (!bleClient.lastPairedMac.isNullOrEmpty()) {
-            bleClient.isPairingMode = false
-            if (bleClient.connectionState.value == BleScaleClient.ConnectionState.IDLE) {
+        scaleViewModelRef?.checkBluetoothAndLocationState()
+        // 回到前台：若处于配对模式则恢复配对扫描；若已记住设备且当前为空闲状态，自动恢复扫描以保持踏秤即连
+        if (bleClient.isPairingMode) {
+            if (bleClient.connectionState.value == BleScaleClient.ConnectionState.IDLE && bleClient.isBluetoothEnabled()) {
+                bleClient.startScan()
+            }
+            phicommS7Manager.startListening()
+        } else if (!bleClient.lastPairedMac.isNullOrEmpty()) {
+            if (bleClient.connectionState.value == BleScaleClient.ConnectionState.IDLE && bleClient.isBluetoothEnabled()) {
                 bleClient.startScan()
             }
             phicommS7Manager.startListening()

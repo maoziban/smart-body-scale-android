@@ -438,9 +438,11 @@ class ScaleViewModel(
                     )
                 }
                 if (mac.isNullOrEmpty()) {
-                    bleClient.disconnectAndReset()
-                } else {
-                    bleClient.isPairingMode = false
+                    // 若当前正处于手动配对扫描模式，绝不调用 disconnectAndReset() 中断配对扫描
+                    if (!bleClient.isPairingMode) {
+                        bleClient.disconnectAndReset()
+                    }
+                } else if (!bleClient.isPairingMode) {
                     if (bleClient.connectionState.value == BleScaleClient.ConnectionState.IDLE && bleClient.isBluetoothEnabled()) {
                         startScanning()
                     }
@@ -919,6 +921,7 @@ class ScaleViewModel(
      * 退出配对界面时停止配对扫描并重置配对模式。
      */
     fun stopPairingScan() {
+        if (!bleClient.isPairingMode) return
         AppLogger.i(TAG, "退出配对模式，重置扫描状态")
         bleClient.stopScan()
         bleClient.isPairingMode = false

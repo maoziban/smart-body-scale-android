@@ -250,8 +250,12 @@ fun DashboardContent(
                         Spacer(modifier = Modifier.height(16.dp))
                         Button(
                             onClick = {
-                                val intent = android.content.Intent(android.bluetooth.BluetoothAdapter.ACTION_REQUEST_ENABLE)
-                                context.startActivity(intent)
+                                try {
+                                    val intent = android.content.Intent(android.bluetooth.BluetoothAdapter.ACTION_REQUEST_ENABLE)
+                                    context.startActivity(intent)
+                                } catch (_: Exception) {
+                                    context.startActivity(android.content.Intent(android.provider.Settings.ACTION_BLUETOOTH_SETTINGS))
+                                }
                             },
                             colors = ButtonDefaults.buttonColors(
                                 containerColor = MaterialTheme.colorScheme.error
