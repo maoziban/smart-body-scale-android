@@ -35,7 +35,39 @@ class ZeppLifeSyncManager(
         .followRedirects(true)
         .build()
 
-    private val defaultUserAgent = "Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36"
+    /**
+     * 专用于第一步获取 Access Code 的客户端：必须禁用重定向！
+     * 因为华米认证接口通过 HTTP 303 重定向响应头的 Location 参数返回 access 授权码，
+     * 若跟随重定向跳转至 AWS S3 静态页面会导致授权码丢失且无法解析。
+     */
+    private val noRedirectClient: OkHttpClient = client.newBuilder()
+        .followRedirects(false)
+        .followSslRedirects(false)
+        .build()
+
+    private val defaultUserAgent = "MiFit/6.3.0 (Linux; Android 14; Mobile)"
+
+    /** 记录最近一次密码错误的账号与密码摘要，防止相同错误密码重复请求触发华米风控 */
+    @Volatile
+    private var lastFailedCredentialKey: String? = null
+
+    /**
+     * 解析 URL 或查询字符串中的 Query 参数
+     */
+    internal fun parseQueryParams(urlOrQuery: String): Map<String, String> {
+        val query = urlOrQuery.substringAfter("?", "")
+            .substringBefore("#")
+        if (query.isBlank()) return emptyMap()
+        return query.split("&").mapNotNull { pair ->
+            val idx = pair.indexOf('=')
+            if (idx <= 0) null
+            else {
+                val k = java.net.URLDecoder.decode(pair.substring(0, idx), "UTF-8")
+                val v = java.net.URLDecoder.decode(pair.substring(idx + 1), "UTF-8")
+                k to v
+            }
+        }.toMap()
+    }
 
     /**
      * 测试连接并获取/刷新 Token
@@ -49,29 +81,49 @@ class ZeppLifeSyncManager(
         directUserId: String
     ): Result<Pair<String, String>> = withContext(Dispatchers.IO) {
         try {
-            // 模式 1：如果用户直接填写了 app_token 和 user_id，直接验证 token 有效性
+            // 模式 1：如果已存在 app_token 和 user_id，优先直接验证 token 有效性，避免频繁触发密码登录风控
             if (directToken.isNotBlank() && directUserId.isNotBlank()) {
-                val valid = verifyToken(directUserId, directToken)
-                return@withContext if (valid) {
-                    Result.success(Pair(directUserId, directToken))
-                } else {
-                    Result.failure(Exception("AppToken 校验未通过或已过期，请重新获取"))
+                val valid = verifyToken(directUserId.trim(), directToken.trim())
+                if (valid) {
+                    return@withContext Result.success(Pair(directUserId.trim(), directToken.trim()))
+                } else if (account.isBlank() || password.isBlank()) {
+                    return@withContext Result.failure(Exception("AppToken 校验未通过或已过期，请重新获取"))
                 }
+                AppLogger.w("ZeppSync", "已保存的 AppToken 已过期，尝试使用账号密码重新刷新 Token...")
             }
 
             // 模式 2：使用账号密码登录换取 Token
-            if (account.isBlank() || password.isBlank()) {
+            val cleanAccount = account.trim()
+            if (cleanAccount.isBlank() || password.isBlank()) {
                 return@withContext Result.failure(Exception("请填写 Zepp Life 账号和密码，或直接填写 AppToken"))
             }
 
-            val encodedAccount = URLEncoder.encode(account, "UTF-8")
-            val loginUrl = "https://api-user.huami.com/registrations/$encodedAccount/tokens"
+            val credKey = "$cleanAccount:${password.hashCode()}"
+            if (credKey == lastFailedCredentialKey) {
+                return@withContext Result.failure(
+                    Exception("该账号与密码组合刚刚验证失败，请先修改正确的密码后再试（避免连续重试触发华米 TooManyRequests 限制）")
+                )
+            }
 
+            val isEmail = cleanAccount.contains("@")
+            val formattedAccount = if (isEmail) {
+                URLEncoder.encode(cleanAccount, "UTF-8")
+            } else {
+                val digits = cleanAccount.replace(" ", "").replace("-", "")
+                when {
+                    digits.startsWith("+") -> digits
+                    digits.startsWith("86") && digits.length > 11 -> "+$digits"
+                    else -> "+86$digits"
+                }
+            }
+
+            // 第一步：请求 tokens 接口并在 303 重定向 Location 头中提取 access 授权码
+            val loginUrl = "https://api-user.huami.com/registrations/$formattedAccount/tokens"
             val formBody = FormBody.Builder()
-                .add("state", "REDIRECTION")
                 .add("client_id", "HuaMi")
                 .add("password", password)
-                .add("redirect_uri", "https://s3-us-west-2.amazonaws.com/hm-registration/success.html")
+                .add("redirect_uri", "https://s3-us-west-2.amazonaws.com/hm-registration/successsignin.html")
+                .add("state", "REDIRECTION")
                 .add("token", "access")
                 .build()
 
@@ -81,47 +133,87 @@ class ZeppLifeSyncManager(
                 .post(formBody)
                 .build()
 
-            val response = client.newCall(request).execute()
+            val response = noRedirectClient.newCall(request).execute()
+            val location = response.header("Location") ?: ""
             val respBody = response.body?.string() ?: ""
 
-            if (!response.isSuccessful) {
-                return@withContext Result.failure(Exception("登录失败(HTTP ${response.code}): $respBody"))
+            AppLogger.i("ZeppSync", "第一步鉴权响应: HTTP ${response.code}, Location=$location")
+
+            val locationParams = parseQueryParams(location)
+            val errorParam = locationParams["error"]
+
+            if (response.code == 429 || errorParam == "TooManyRequests" || respBody.contains("TooManyRequests", ignoreCase = true)) {
+                return@withContext Result.failure(
+                    Exception(
+                        "登录请求过于频繁 (TooManyRequests)：因多次尝试登录，华米服务器已临时限制当前网络 IP 或账号。" +
+                        "请切换手机移动数据/Wi-Fi（更换 IP）或等待 15~30 分钟后再试，也可直接填写 AppToken 免密连接。"
+                    )
+                )
             }
 
-            val json = JSONObject(respBody)
-            val tokenInfo = json.optJSONObject("token_info")
-                ?: return@withContext Result.failure(Exception("登录未返回有效 token_info: $respBody"))
-
-            val loginToken = tokenInfo.optString("login_token")
-            val userId = tokenInfo.optString("user_id")
-
-            if (loginToken.isBlank() || userId.isBlank()) {
-                return@withContext Result.failure(Exception("登录令牌解析失败: $respBody"))
+            if (!errorParam.isNullOrBlank()) {
+                if (errorParam == "-1002" || errorParam.contains("password", ignoreCase = true)) {
+                    lastFailedCredentialKey = credKey
+                    return@withContext Result.failure(Exception("账号或密码错误 (代码: $errorParam)，请核对密码后重试"))
+                }
+                return@withContext Result.failure(Exception("华米认证返回错误: $errorParam"))
             }
 
-            // 用 login_token 换取 app_token
-            val appTokenUrl = "https://account.huami.com/v2/client/login"
-            val appTokenBody = FormBody.Builder()
-                .add("app_name", "com.xiaomi.hm.health")
-                .add("code", loginToken)
-                .add("grant_type", "access_token")
-                .add("country_code", "CN")
-                .build()
+            val accessCode = locationParams["access"]
+            val countryCode = locationParams["country_code"] ?: "CN"
 
-            val appTokenRequest = Request.Builder()
-                .url(appTokenUrl)
-                .header("User-Agent", defaultUserAgent)
-                .post(appTokenBody)
-                .build()
+            if (accessCode.isNullOrBlank()) {
+                return@withContext Result.failure(
+                    Exception("未获取到登录授权码 (HTTP ${response.code})，请确认账号格式（手机号或邮箱）与密码是否正确")
+                )
+            }
 
-            val appTokenResp = client.newCall(appTokenRequest).execute()
-            val appTokenRespStr = appTokenResp.body?.string() ?: ""
+            // 登录成功获取授权码，清空错误密码拦截记录
+            lastFailedCredentialKey = null
 
-            val appTokenJson = JSONObject(appTokenRespStr)
-            val finalTokenInfo = appTokenJson.optJSONObject("token_info")
-            val appToken = finalTokenInfo?.optString("app_token") ?: loginToken
+            // 第二步：使用 access 授权码向 account.huami.com/v2/client/login 换取 app_token 与 user_id
+            val thirdNamesToTry = if (isEmail) listOf("email", "huami") else listOf("huami_phone", "huami")
+            var lastLoginRespStr = ""
 
-            Result.success(Pair(userId, appToken))
+            for (thirdName in thirdNamesToTry) {
+                val appTokenUrl = "https://account.huami.com/v2/client/login"
+                val appTokenBody = FormBody.Builder()
+                    .add("app_name", "com.xiaomi.hm.health")
+                    .add("app_version", "6.3.0")
+                    .add("code", accessCode)
+                    .add("country_code", countryCode)
+                    .add("device_id", "02:00:00:00:00:00")
+                    .add("device_model", "android_phone")
+                    .add("grant_type", "access_token")
+                    .add("third_name", thirdName)
+                    .add("allow_regist", "false")
+                    .add("dn", "account.huami.com,api-user.huami.com,api-watch.huami.com,api-analytics.huami.com,app-analytics.huami.com,api-mifit.huami.com")
+                    .build()
+
+                val appTokenRequest = Request.Builder()
+                    .url(appTokenUrl)
+                    .header("User-Agent", defaultUserAgent)
+                    .post(appTokenBody)
+                    .build()
+
+                val appTokenResp = client.newCall(appTokenRequest).execute()
+                lastLoginRespStr = appTokenResp.body?.string() ?: ""
+
+                if (lastLoginRespStr.startsWith("{")) {
+                    val appTokenJson = JSONObject(lastLoginRespStr)
+                    val tokenInfo = appTokenJson.optJSONObject("token_info")
+                    if (tokenInfo != null) {
+                        val appToken = tokenInfo.optString("app_token").ifBlank { tokenInfo.optString("login_token") }
+                        val userId = tokenInfo.optString("user_id")
+                        if (appToken.isNotBlank() && userId.isNotBlank()) {
+                            AppLogger.i("ZeppSync", "Zepp Life 登录成功: userId=$userId, thirdName=$thirdName")
+                            return@withContext Result.success(Pair(userId, appToken))
+                        }
+                    }
+                }
+            }
+
+            Result.failure(Exception("换取 AppToken 失败: $lastLoginRespStr"))
         } catch (e: Exception) {
             AppLogger.e("ZeppSync", "Zepp Life 登录鉴权异常: ${e.message}")
             Result.failure(e)

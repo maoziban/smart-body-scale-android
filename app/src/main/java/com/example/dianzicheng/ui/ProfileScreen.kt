@@ -46,6 +46,7 @@ import com.example.dianzicheng.ui.theme.电子秤Theme
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -775,9 +776,9 @@ fun WebDavConfigDialog(
     onTest: (String, String, String) -> Unit,
     isOperating: Boolean
 ) {
-    var url by remember { mutableStateOf(initialUrl) }
-    var username by remember { mutableStateOf(initialUsername) }
-    var password by remember { mutableStateOf(initialPassword) }
+    var url by remember(initialUrl) { mutableStateOf(initialUrl) }
+    var username by remember(initialUsername) { mutableStateOf(initialUsername) }
+    var password by remember(initialPassword) { mutableStateOf(initialPassword) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -792,7 +793,7 @@ fun WebDavConfigDialog(
                 OutlinedTextField(
                     value = url,
                     onValueChange = { url = it },
-                    label = { Text("服务器 URL (如 https://dav.jianguoyun.com/dav/)") },
+                    label = { Text("服务器 URL (如 https://dav.jianguoyun.com/dav/我的坚果云/)") },
                     modifier = Modifier.fillMaxWidth(),
                     shape = MaterialTheme.shapes.medium
                 )
@@ -879,7 +880,7 @@ fun HealthConnectSyncDialog(
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 Text(
-                    "Health Connect 是 Android 官方健康数据共享中心。开启后可将测量数据写入，供 Google Fit、三星健康等外部健康 App 读取。",
+                    "Health Connect 是 Android 官方健康数据共享中心。开启并授权全部权限后，可将身体测量 5 大项（体重、体脂率、去脂体重、骨量、身体水分量）写入系统健康。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -951,10 +952,10 @@ fun ZeppLifeConfigDialog(
     onTest: (String, String, String, String, (Boolean, String) -> Unit) -> Unit,
     isOperating: Boolean
 ) {
-    var account by remember { mutableStateOf(initialAccount) }
-    var password by remember { mutableStateOf(initialPassword) }
-    var token by remember { mutableStateOf(initialToken) }
-    var userId by remember { mutableStateOf(initialUserId) }
+    var account by remember(initialAccount) { mutableStateOf(initialAccount) }
+    var password by remember(initialPassword) { mutableStateOf(initialPassword) }
+    var token by remember(initialToken) { mutableStateOf(initialToken) }
+    var userId by remember(initialUserId) { mutableStateOf(initialUserId) }
     var testResult by remember { mutableStateOf<String?>(null) }
 
     AlertDialog(
@@ -1023,7 +1024,7 @@ fun ZeppLifeConfigDialog(
                 OutlinedTextField(
                     value = account,
                     onValueChange = { account = it },
-                    label = { Text("Zepp/华米 登录邮箱/账号") },
+                    label = { Text("Zepp/华米 登录手机号或邮箱") },
                     modifier = Modifier.fillMaxWidth(),
                     shape = MaterialTheme.shapes.medium
                 )
@@ -1282,12 +1283,20 @@ fun ProfileScreen(
     val zeppLifeAppToken by viewModel.zeppLifeAppToken.collectAsState()
     val zeppLifeUserId by viewModel.zeppLifeUserId.collectAsState()
 
+    val coroutineScope = rememberCoroutineScope()
+    var pendingBatchSyncAfterPermission by remember { mutableStateOf(false) }
+
     val permissionLauncher = rememberLauncherForActivityResult(
         contract = PermissionController.createRequestPermissionResultContract()
     ) { granted ->
         if (granted.isNotEmpty()) {
             Toast.makeText(context, "已获得系统健康权限！", Toast.LENGTH_SHORT).show()
+            if (pendingBatchSyncAfterPermission) {
+                pendingBatchSyncAfterPermission = false
+                viewModel.batchSyncToHealthConnect()
+            }
         } else {
+            pendingBatchSyncAfterPermission = false
             Toast.makeText(context, "未获得健康读写权限", Toast.LENGTH_SHORT).show()
         }
     }
@@ -1317,31 +1326,26 @@ fun ProfileScreen(
         onToggleHealthConnect = { enabled ->
             viewModel.setHealthConnectEnabled(enabled)
             if (enabled && viewModel.isHealthConnectAvailable()) {
-                permissionLauncher.launch(
-                    setOf(
-                        androidx.health.connect.client.permission.HealthPermission.getWritePermission(androidx.health.connect.client.records.WeightRecord::class),
-                        androidx.health.connect.client.permission.HealthPermission.getWritePermission(androidx.health.connect.client.records.BodyFatRecord::class),
-                        androidx.health.connect.client.permission.HealthPermission.getReadPermission(androidx.health.connect.client.records.WeightRecord::class),
-                        androidx.health.connect.client.permission.HealthPermission.getReadPermission(androidx.health.connect.client.records.BodyFatRecord::class)
-                    )
-                )
+                permissionLauncher.launch(com.example.dianzicheng.data.health.HealthConnectManager.ALL_PERMISSIONS)
             }
         },
         onRequestHealthConnectPermissions = {
             if (viewModel.isHealthConnectAvailable()) {
-                permissionLauncher.launch(
-                    setOf(
-                        androidx.health.connect.client.permission.HealthPermission.getWritePermission(androidx.health.connect.client.records.WeightRecord::class),
-                        androidx.health.connect.client.permission.HealthPermission.getWritePermission(androidx.health.connect.client.records.BodyFatRecord::class),
-                        androidx.health.connect.client.permission.HealthPermission.getReadPermission(androidx.health.connect.client.records.WeightRecord::class),
-                        androidx.health.connect.client.permission.HealthPermission.getReadPermission(androidx.health.connect.client.records.BodyFatRecord::class)
-                    )
-                )
+                permissionLauncher.launch(com.example.dianzicheng.data.health.HealthConnectManager.ALL_PERMISSIONS)
             } else {
                 Toast.makeText(context, "当前设备不支持或未安装 Health Connect", Toast.LENGTH_SHORT).show()
             }
         },
-        onBatchSyncToHealthConnect = { viewModel.batchSyncToHealthConnect() },
+        onBatchSyncToHealthConnect = {
+            coroutineScope.launch {
+                if (viewModel.isHealthConnectAvailable() && !viewModel.hasAllHealthConnectWritePermissions()) {
+                    pendingBatchSyncAfterPermission = true
+                    permissionLauncher.launch(com.example.dianzicheng.data.health.HealthConnectManager.ALL_PERMISSIONS)
+                } else {
+                    viewModel.batchSyncToHealthConnect()
+                }
+            }
+        },
         onOpenMiHealth = { viewModel.openMiHealth() },
         onOpenHealthConnectSettings = { viewModel.openHealthConnectSettings() },
         syncProgress = syncProgress,

@@ -296,6 +296,10 @@ class ProfileViewModel(
     /** 检查当前设备是否支持并已安装 Health Connect */
     fun isHealthConnectAvailable(): Boolean = healthConnectManager?.isAvailable() == true
 
+    /** 检查是否已授予全部 5 大项身体测量写入权限 */
+    suspend fun hasAllHealthConnectWritePermissions(): Boolean =
+        healthConnectManager?.hasAllWritePermissions() == true
+
     /**
      * 将所有历史测量数据批量同步到 Health Connect。
      *
@@ -321,9 +325,10 @@ class ProfileViewModel(
                 return@launch
             }
             if (!hcManager.hasWritePermissions()) {
-                _statusMessage.value = "请先在上方开启\"同步至系统健康\"并授予权限，再进行批量同步"
+                _statusMessage.value = "请先点击「申请健康中心读写权限」授予权限后再进行批量同步"
                 return@launch
             }
+            val hasAll5 = hcManager.hasAllWritePermissions()
             _isOperating.value = true
             _syncProgress.value = "正在读取历史记录..."
             try {
@@ -338,10 +343,10 @@ class ProfileViewModel(
                 val (success, failed) = hcManager.batchWriteMeasurements(allMeasurements)
                 _syncProgress.value = null
                 _isOperating.value = false
-                _statusMessage.value = if (failed == 0) {
-                    "✅ 成功同步 $success 条数据！小米健康将自动读取这些数据。"
-                } else {
-                    "同步完成：成功 $success 条，失败 $failed 条"
+                _statusMessage.value = when {
+                    failed > 0 -> "同步完成：成功 $success 条，失败 $failed 条"
+                    !hasAll5 -> "已同步 $success 条记录（部分新增指标未授权，请点击「申请健康中心读写权限」允许全部 5 项后再同步）"
+                    else -> "✅ 成功同步 $success 条记录（含体重、体脂、去脂体重、骨量、水分 5 大项）！"
                 }
             } catch (e: Exception) {
                 _syncProgress.value = null
@@ -373,7 +378,10 @@ class ProfileViewModel(
     /** 保存 Zepp Life 配置 */
     fun saveZeppLifeConfig(account: String, pass: String, token: String, userId: String) {
         viewModelScope.launch {
-            preferenceManager.saveZeppLifeConfig(account, pass, token, userId)
+            // 若用户未手动修改弹窗中的空 token，而 DataStore 中刚刚通过「测试/提取」保存了有效 token，则保留已提取的 token
+            val finalToken = token.ifBlank { zeppLifeAppToken.value }
+            val finalUserId = userId.ifBlank { zeppLifeUserId.value }
+            preferenceManager.saveZeppLifeConfig(account, pass, finalToken, finalUserId)
             _statusMessage.value = "Zepp Life 配置已保存"
         }
     }
@@ -439,7 +447,7 @@ class ProfileViewModel(
     }
 
     /**
-     * 测试 WebDAV 连接是否可用（不保存配置，仅验证连通性）。
+     * 测试 WebDAV 连接是否可用，测试通过后自动保存配置。
      * 测试期间 [isOperating] 为 true，结果通过 [statusMessage] 展示。
      */
     fun testWebdavConnection(url: String, user: String, pass: String) {
@@ -448,6 +456,9 @@ class ProfileViewModel(
             _isOperating.value = true
             val result = manager.testConnection(url, user, pass)
             _isOperating.value = false
+            result.onSuccess {
+                preferenceManager.saveWebdavConfig(url, user, pass)
+            }
             _statusMessage.value = result.getOrElse { it.localizedMessage }
         }
     }

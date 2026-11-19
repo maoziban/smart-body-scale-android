@@ -74,9 +74,7 @@ fun PairingScreen(
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             arrayOf(
                 Manifest.permission.BLUETOOTH_SCAN,
-                Manifest.permission.BLUETOOTH_CONNECT,
-                Manifest.permission.ACCESS_FINE_LOCATION,
-                Manifest.permission.ACCESS_COARSE_LOCATION
+                Manifest.permission.BLUETOOTH_CONNECT
             )
         } else {
             arrayOf(
@@ -87,14 +85,12 @@ fun PairingScreen(
     }
 
     fun hasBlePermissions(): Boolean {
-        val hasLocation = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
-            ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_SCAN) == PackageManager.PERMISSION_GRANTED &&
-            ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED &&
-            hasLocation
+            ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED
         } else {
-            hasLocation
+            ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
+            ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
         }
     }
 
@@ -106,12 +102,10 @@ fun PairingScreen(
         }
     }
 
-    // 页面进入时自启动配对扫描
+    // 页面进入时若已具备权限则自启动配对扫描（首次启动的权限弹窗由 MainActivity 统一发起，避免并发重复请求被系统取消）
     LaunchedEffect(Unit) {
         if (hasBlePermissions()) {
             viewModel.startPairingScan()
-        } else {
-            permissionLauncher.launch(requiredPermissions)
         }
     }
 
@@ -268,7 +262,7 @@ fun PairingScreen(
                     }
                 )
                 return@Scaffold
-            } else if (!uiState.isLocationEnabled) {
+            } else if (!uiState.isLocationEnabled && Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
                 LocationDisabledCard(
                     onEnableLocation = {
                         val intent = Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS)
@@ -558,7 +552,7 @@ private fun ActiveWeighingCard(
                             text = "正在称重 · 即时读数",
                             style = MaterialTheme.typography.labelSmall,
                             fontWeight = FontWeight.Bold,
-                            color = Color(0xFF2E7D32)
+                            color = Color(0xFF4CAF50)
                         )
                     }
                 }

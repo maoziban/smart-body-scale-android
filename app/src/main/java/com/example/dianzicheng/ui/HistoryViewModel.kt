@@ -105,6 +105,10 @@ class HistoryViewModel(
     private val _selectedMetric = MutableStateFlow(HistoryMetric.WEIGHT)
     val selectedMetric: StateFlow<HistoryMetric> = _selectedMetric.asStateFlow()
 
+    /** 上次查看历史记录明细的时间戳（毫秒），用于计算未读新记录角标数 */
+    private val _lastViewedRecordsTime = MutableStateFlow(0L)
+    val lastViewedRecordsTime: StateFlow<Long> = _lastViewedRecordsTime.asStateFlow()
+
     private var hasAutoSelectedMember = false
 
     init {
@@ -116,6 +120,23 @@ class HistoryViewModel(
                     hasAutoSelectedMember = true
                 }
             }
+        }
+        viewModelScope.launch {
+            preferenceManager?.lastViewedRecordsTime?.collect { timeMs ->
+                if (timeMs > _lastViewedRecordsTime.value) {
+                    _lastViewedRecordsTime.value = timeMs
+                }
+            }
+        }
+    }
+
+    /** 标记历史记录明细已查看，清除右上角未读角标 */
+    fun markRecordsAsViewed() {
+        val latestRecordTime = history.value.maxOfOrNull { it.measuredAtEpochMs } ?: 0L
+        val viewedAt = maxOf(System.currentTimeMillis(), latestRecordTime)
+        _lastViewedRecordsTime.value = viewedAt
+        viewModelScope.launch {
+            preferenceManager?.saveLastViewedRecordsTime(viewedAt)
         }
     }
 

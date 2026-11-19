@@ -44,6 +44,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.dianzicheng.domain.BodyMeasurement
@@ -169,6 +170,7 @@ fun HistoryScreen(
     val selectedMemberId by viewModel.selectedMemberId.collectAsState()
     val selectedTimeRange by viewModel.selectedTimeRange.collectAsState()
     val selectedMetric by viewModel.selectedMetric.collectAsState()
+    val lastViewedRecordsTime by viewModel.lastViewedRecordsTime.collectAsState()
 
     var showMemberSheet by remember { mutableStateOf(false) }
     val context = LocalContext.current
@@ -183,6 +185,10 @@ fun HistoryScreen(
         } else {
             history.filter { it.memberId == selectedMemberId || it.memberId == null }
         }
+    }
+
+    val unreadRecordCount = remember(memberFilteredHistory, lastViewedRecordsTime) {
+        memberFilteredHistory.count { it.measuredAtEpochMs > lastViewedRecordsTime }
     }
 
     val currentMemberName = currentMember?.name ?: if (members.size <= 1 && members.isNotEmpty()) members.first().name else "全部成员"
@@ -207,6 +213,7 @@ fun HistoryScreen(
         memberName = currentMemberName,
         isMale = currentMember?.sex == Sex.MALE,
         totalRecordCount = memberFilteredHistory.size,
+        unreadRecordCount = unreadRecordCount,
         selectedTimeRange = selectedTimeRange,
         selectedMetric = selectedMetric,
         stats = stats,
@@ -220,7 +227,10 @@ fun HistoryScreen(
                 timeRange = selectedTimeRange
             )
         },
-        onRecordsClick = onNavigateToRecords,
+        onRecordsClick = {
+            viewModel.markRecordsAsViewed()
+            onNavigateToRecords()
+        },
         onSelectTimeRange = { viewModel.selectTimeRange(it) },
         onSelectMetric = { viewModel.selectMetric(it) },
         modifier = modifier
@@ -235,6 +245,7 @@ fun HistoryContent(
     memberName: String,
     isMale: Boolean,
     totalRecordCount: Int,
+    unreadRecordCount: Int = 0,
     selectedTimeRange: HistoryTimeRange,
     selectedMetric: HistoryMetric,
     stats: TrendStatistics,
@@ -251,7 +262,7 @@ fun HistoryContent(
             TrendTopBar(
                 memberName = memberName,
                 isMale = isMale,
-                totalRecordCount = totalRecordCount,
+                unreadRecordCount = unreadRecordCount,
                 onMemberClick = onMemberClick,
                 onShareClick = onShareClick,
                 onRecordsClick = onRecordsClick
@@ -265,51 +276,79 @@ fun HistoryContent(
                 .fillMaxSize()
                 .padding(innerPadding)
         ) {
-            if (maxHeight < 520.dp) {
-                // 小屏/横屏多任务模式：支持纵向滚动查看完整内容
+            val fontScale = LocalDensity.current.fontScale.coerceAtLeast(1f)
+            // 非图表区域在常规字号下约占 460dp，加上图表最小可用高度 210dp，按系统字体缩放比例动态判断是否启用纵向滚动
+            val useScrollableLayout = maxHeight < (460.dp * fontScale + 210.dp)
+            val scrollState = rememberScrollState()
+
+            Column(
+                modifier = if (useScrollableLayout) {
+                    Modifier
+                        .fillMaxSize()
+                        .verticalScroll(scrollState)
+                        .padding(horizontal = 16.dp, vertical = 6.dp)
+                } else {
+                    Modifier
+                        .fillMaxSize()
+                        .padding(horizontal = 16.dp, vertical = 4.dp)
+                },
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                // 1. 时间周期切换胶囊栏（近一周、近一月、近90天、近半年）
+                TimeRangeCapsuleSegment(
+                    selectedRange = selectedTimeRange,
+                    onSelectRange = onSelectTimeRange,
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                // 2. 指标切换栏（体重、BMI、体脂率）
+                MetricTabsRow(
+                    selectedMetric = selectedMetric,
+                    onSelectMetric = onSelectMetric,
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                // 3. 时间区间 & 极值概览栏（仅在有数据时展示）
+                if (stats.points.isNotEmpty()) {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    RangeAndExtremesBar(
+                        dateRangeText = stats.dateRangeText,
+                        maxVal = stats.maxPoint?.second,
+                        minVal = stats.minPoint?.second,
+                        metric = selectedMetric,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+
+                // 4. 核心平滑走势曲线图：空间充足时 weight(1f) 撑满，小屏或大字体模式下保持固定高度并支持整页滚动
+                EnhancedTrendChart(
+                    points = stats.points,
+                    metric = selectedMetric,
+                    totalHistoryCount = totalRecordCount,
+                    modifier = if (useScrollableLayout) {
+                        Modifier
+                            .fillMaxWidth()
+                            .height(220.dp)
+                            .padding(vertical = 4.dp)
+                    } else {
+                        Modifier
+                            .fillMaxWidth()
+                            .weight(1f)
+                            .padding(vertical = 4.dp)
+                    }
+                )
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                // 5. 下半部分：统计指标卡与洞察建议卡
                 Column(
                     modifier = Modifier
-                        .fillMaxSize()
-                        .verticalScroll(rememberScrollState())
-                        .padding(horizontal = 16.dp, vertical = 6.dp),
+                        .fillMaxWidth()
+                        .padding(bottom = if (useScrollableLayout) 10.dp else 6.dp),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    TimeRangeCapsuleSegment(
-                        selectedRange = selectedTimeRange,
-                        onSelectRange = onSelectTimeRange,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-
-                    Spacer(modifier = Modifier.height(10.dp))
-
-                    MetricTabsRow(
-                        selectedMetric = selectedMetric,
-                        onSelectMetric = onSelectMetric,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-
-                    if (stats.points.isNotEmpty()) {
-                        Spacer(modifier = Modifier.height(8.dp))
-                        RangeAndExtremesBar(
-                            dateRangeText = stats.dateRangeText,
-                            maxVal = stats.maxPoint?.second,
-                            minVal = stats.minPoint?.second,
-                            metric = selectedMetric,
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                    }
-
-                    EnhancedTrendChart(
-                        points = stats.points,
-                        metric = selectedMetric,
-                        totalHistoryCount = totalRecordCount,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(240.dp)
-                    )
-
-                    Spacer(modifier = Modifier.height(12.dp))
-
                     SummaryMetricCard(
                         distinctDays = stats.distinctDays,
                         change = stats.change,
@@ -326,79 +365,6 @@ fun HistoryContent(
                         totalCount = totalRecordCount,
                         modifier = Modifier.fillMaxWidth()
                     )
-                    Spacer(modifier = Modifier.height(10.dp))
-                }
-            } else {
-                // 标准竖屏模式：利用 weight(1f) 自适应铺满中间全部空间，数据在中间完整呈现，无任何突兀空洞
-                Column(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(horizontal = 16.dp, vertical = 4.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                    // 1. 时间周期切换胶囊栏（近一周、近一月、近90天、近半年）
-                    TimeRangeCapsuleSegment(
-                        selectedRange = selectedTimeRange,
-                        onSelectRange = onSelectTimeRange,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-
-                    Spacer(modifier = Modifier.height(10.dp))
-
-                    // 2. 指标切换栏（体重、BMI、体脂率）
-                    MetricTabsRow(
-                        selectedMetric = selectedMetric,
-                        onSelectMetric = onSelectMetric,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-
-                    // 3. 时间区间 & 极值概览栏（仅在有数据时展示）
-                    if (stats.points.isNotEmpty()) {
-                        Spacer(modifier = Modifier.height(8.dp))
-                        RangeAndExtremesBar(
-                            dateRangeText = stats.dateRangeText,
-                            maxVal = stats.maxPoint?.second,
-                            minVal = stats.minPoint?.second,
-                            metric = selectedMetric,
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                    }
-
-                    // 4. 核心平滑走势曲线图：weight(1f) 自适应撑满全部中间可用纵深，数据完整舒展居中展示
-                    EnhancedTrendChart(
-                        points = stats.points,
-                        metric = selectedMetric,
-                        totalHistoryCount = totalRecordCount,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .weight(1f)
-                            .padding(vertical = 4.dp)
-                    )
-
-                    // 5. 下半部分：紧密贴底显示的统计指标卡与洞察建议卡
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(bottom = 6.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally
-                    ) {
-                        SummaryMetricCard(
-                            distinctDays = stats.distinctDays,
-                            change = stats.change,
-                            metric = selectedMetric,
-                            modifier = Modifier.fillMaxWidth()
-                        )
-
-                        Spacer(modifier = Modifier.height(10.dp))
-
-                        ExtraInsightsCard(
-                            stats = stats,
-                            metric = selectedMetric,
-                            onNavigateToRecords = onRecordsClick,
-                            totalCount = totalRecordCount,
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                    }
                 }
             }
         }
@@ -473,7 +439,7 @@ private fun HistoryScreenPreview() {
 fun TrendTopBar(
     memberName: String,
     isMale: Boolean,
-    totalRecordCount: Int,
+    unreadRecordCount: Int,
     onMemberClick: () -> Unit,
     onShareClick: () -> Unit,
     onRecordsClick: () -> Unit
@@ -538,18 +504,30 @@ fun TrendTopBar(
                 )
             }
             Spacer(modifier = Modifier.width(2.dp))
-            IconButton(
-                onClick = onRecordsClick,
-                modifier = Modifier.size(38.dp)
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(12.dp))
+                    .clickable(onClick = onRecordsClick)
+                    .padding(
+                        start = 9.dp,
+                        top = 8.dp,
+                        bottom = 8.dp,
+                        end = if (unreadRecordCount > 9) 16.dp else if (unreadRecordCount > 0) 12.dp else 9.dp
+                    ),
+                contentAlignment = Alignment.Center
             ) {
                 BadgedBox(
                     badge = {
-                        if (totalRecordCount > 0) {
+                        if (unreadRecordCount > 0) {
                             Badge(
+                                modifier = Modifier.offset(x = (-2).dp, y = 2.dp),
                                 containerColor = MaterialTheme.colorScheme.primary,
                                 contentColor = MaterialTheme.colorScheme.onPrimary
                             ) {
-                                Text(if (totalRecordCount > 99) "99+" else "$totalRecordCount")
+                                Text(
+                                    text = if (unreadRecordCount > 99) "99+" else "$unreadRecordCount",
+                                    fontSize = 10.sp
+                                )
                             }
                         }
                     }
@@ -581,7 +559,8 @@ fun TimeRangeCapsuleSegment(
     Box(
         modifier = modifier
             .fillMaxWidth()
-            .height(40.dp)
+            .defaultMinSize(minHeight = 40.dp)
+            .height(IntrinsicSize.Min)
             .background(
                 color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
                 shape = RoundedCornerShape(12.dp)
@@ -616,14 +595,18 @@ fun TimeRangeCapsuleSegment(
                             }
                         )
                         .clip(RoundedCornerShape(9.dp))
-                        .clickable { onSelectRange(range) },
+                        .clickable { onSelectRange(range) }
+                        .padding(vertical = 6.dp, horizontal = 2.dp),
                     contentAlignment = Alignment.Center
                 ) {
                     Text(
                         text = range.label,
                         fontSize = 13.sp,
                         fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
-                        color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                        color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        softWrap = false,
+                        overflow = TextOverflow.Ellipsis
                     )
                 }
             }
@@ -660,7 +643,9 @@ fun MetricTabsRow(
                     text = metric.label,
                     fontSize = 16.sp,
                     fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
-                    color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.65f)
+                    color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.65f),
+                    maxLines = 1,
+                    softWrap = false
                 )
                 Spacer(modifier = Modifier.height(4.dp))
                 Box(
@@ -693,58 +678,67 @@ fun RangeAndExtremesBar(
         return
     }
 
-    Row(
+    FlowRow(
         modifier = modifier.padding(horizontal = 6.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+        itemVerticalAlignment = Alignment.CenterVertically
     ) {
         Text(
             text = dateRangeText,
             fontSize = 12.sp,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            softWrap = false
         )
 
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Box(
-                modifier = Modifier
-                    .size(6.dp)
-                    .clip(CircleShape)
-                    .background(Color(0xFFEF4444))
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            ExtremeValueChip(
+                dotColor = Color(0xFFEF4444),
+                label = "最高 ",
+                value = "${metric.formatNumberOnly(maxVal)}${metric.unit}"
             )
-            Spacer(modifier = Modifier.width(4.dp))
-            Text(
-                text = "最高 ",
-                fontSize = 11.sp,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            Text(
-                text = "${metric.formatNumberOnly(maxVal)}${metric.unit}",
-                fontSize = 12.sp,
-                fontWeight = FontWeight.SemiBold,
-                color = MaterialTheme.colorScheme.onSurface
-            )
-
-            Spacer(modifier = Modifier.width(12.dp))
-
-            Box(
-                modifier = Modifier
-                    .size(6.dp)
-                    .clip(CircleShape)
-                    .background(Color(0xFF10B981))
-            )
-            Spacer(modifier = Modifier.width(4.dp))
-            Text(
-                text = "最低 ",
-                fontSize = 11.sp,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            Text(
-                text = "${metric.formatNumberOnly(minVal)}${metric.unit}",
-                fontSize = 12.sp,
-                fontWeight = FontWeight.SemiBold,
-                color = MaterialTheme.colorScheme.onSurface
+            ExtremeValueChip(
+                dotColor = Color(0xFF10B981),
+                label = "最低 ",
+                value = "${metric.formatNumberOnly(minVal)}${metric.unit}"
             )
         }
+    }
+}
+
+@Composable
+private fun ExtremeValueChip(
+    dotColor: Color,
+    label: String,
+    value: String
+) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Box(
+            modifier = Modifier
+                .size(6.dp)
+                .clip(CircleShape)
+                .background(dotColor)
+        )
+        Spacer(modifier = Modifier.width(4.dp))
+        Text(
+            text = label,
+            fontSize = 11.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            softWrap = false
+        )
+        Text(
+            text = value,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = MaterialTheme.colorScheme.onSurface,
+            maxLines = 1,
+            softWrap = false
+        )
     }
 }
 
@@ -771,7 +765,7 @@ fun EnhancedTrendChart(
                 val paddingLeft = 48.dp.toPx()
                 val paddingRight = 16.dp.toPx()
                 val paddingTop = 16.dp.toPx()
-                val paddingBottom = 32.dp.toPx()
+                val paddingBottom = 46.dp.toPx()
                 val chartW = size.width - paddingLeft - paddingRight
                 val chartH = size.height - paddingTop - paddingBottom
                 val tickCount = 5
@@ -827,6 +821,9 @@ fun EnhancedTrendChart(
     }
 
     val density = LocalDensity.current
+    val gridLineColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)
+    val pointCenterColor = MaterialTheme.colorScheme.surface
+    val axisLabelColorArgb = MaterialTheme.colorScheme.onSurfaceVariant.toArgb()
 
     var selectedIndex by remember { mutableIntStateOf(-1) }
 
@@ -886,7 +883,7 @@ fun EnhancedTrendChart(
             val paddingLeft = 48.dp.toPx()
             val paddingRight = 16.dp.toPx()
             val paddingTop = 16.dp.toPx()
-            val paddingBottom = 32.dp.toPx()
+            val paddingBottom = 46.dp.toPx()
             val chartW = w - paddingLeft - paddingRight
             val chartH = h - paddingTop - paddingBottom
             val n = points.size
@@ -903,7 +900,7 @@ fun EnhancedTrendChart(
             // 1. 绘制 5 档 Y 轴刻度文本及水平虚线
             val tickCount = 5
             val tickPaint = android.graphics.Paint().apply {
-                color = android.graphics.Color.parseColor("#A0A0A5")
+                color = axisLabelColorArgb
                 isAntiAlias = true
                 textSize = with(density) { 10.sp.toPx() }
                 textAlign = android.graphics.Paint.Align.RIGHT
@@ -914,7 +911,7 @@ fun EnhancedTrendChart(
                 val gy = paddingTop + gi * (chartH / (tickCount - 1))
 
                 drawLine(
-                    color = Color(0x18000000),
+                    color = gridLineColor,
                     start = Offset(paddingLeft, gy),
                     end = Offset(paddingLeft + chartW, gy),
                     strokeWidth = 1.dp.toPx(),
@@ -939,7 +936,7 @@ fun EnhancedTrendChart(
                 if (n == 1) {
                     val px = xOf(0)
                     val py = yOf(values[0])
-                    drawCircle(Color.White, radius = 5.5.dp.toPx(), center = Offset(px, py))
+                    drawCircle(pointCenterColor, radius = 5.5.dp.toPx(), center = Offset(px, py))
                     drawCircle(primaryColor, radius = 4.5.dp.toPx(), center = Offset(px, py), style = Stroke(width = 2.dp.toPx()))
                 } else {
                     val linePath = Path()
@@ -992,7 +989,7 @@ fun EnhancedTrendChart(
                     for (i in 0 until n) {
                         val px = xOf(i)
                         val py = yOf(values[i])
-                        drawCircle(Color.White, radius = 4.dp.toPx(), center = Offset(px, py))
+                        drawCircle(pointCenterColor, radius = 4.dp.toPx(), center = Offset(px, py))
                         drawCircle(primaryColor, radius = 4.dp.toPx(), center = Offset(px, py), style = Stroke(width = 1.8.dp.toPx()))
                     }
                 }
@@ -1000,7 +997,7 @@ fun EnhancedTrendChart(
 
             // 3. X 轴时间标签（双行：MM/dd 和 yyyy）
             val dateLabelPaint = android.graphics.Paint().apply {
-                color = android.graphics.Color.parseColor("#A0A0A5")
+                color = axisLabelColorArgb
                 isAntiAlias = true
                 textSize = with(density) { 9.sp.toPx() }
                 textAlign = android.graphics.Paint.Align.CENTER
@@ -1019,9 +1016,9 @@ fun EnhancedTrendChart(
                 val line1 = dateOnlyFormat.format(Date(point.first.measuredAtEpochMs))
                 val line2 = yearFormat.format(Date(point.first.measuredAtEpochMs))
 
-                val baseY = paddingTop + chartH + 13.dp.toPx()
+                val baseY = paddingTop + chartH + 22.dp.toPx()
                 drawContext.canvas.nativeCanvas.drawText(line1, px, baseY, dateLabelPaint)
-                drawContext.canvas.nativeCanvas.drawText(line2, px, baseY + 10.dp.toPx(), dateLabelPaint)
+                drawContext.canvas.nativeCanvas.drawText(line2, px, baseY + 12.dp.toPx(), dateLabelPaint)
             }
 
             // 4. 交互选中点引导线与高亮光晕
@@ -1038,7 +1035,7 @@ fun EnhancedTrendChart(
                 )
 
                 drawCircle(primaryColor.copy(alpha = 0.2f), radius = 9.dp.toPx(), center = Offset(activeX, activeY))
-                drawCircle(Color.White, radius = 5.dp.toPx(), center = Offset(activeX, activeY))
+                drawCircle(pointCenterColor, radius = 5.dp.toPx(), center = Offset(activeX, activeY))
                 drawCircle(primaryColor, radius = 4.5.dp.toPx(), center = Offset(activeX, activeY), style = Stroke(width = 2.5.dp.toPx()))
             }
         }
@@ -1122,7 +1119,9 @@ fun SummaryMetricCard(
                 Text(
                     text = "记录天数",
                     fontSize = 13.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    softWrap = false
                 )
                 Spacer(modifier = Modifier.height(6.dp))
                 Row(verticalAlignment = Alignment.Bottom) {
@@ -1130,13 +1129,17 @@ fun SummaryMetricCard(
                         text = "$distinctDays",
                         fontSize = 32.sp,
                         fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onSurface
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                        softWrap = false
                     )
                     Text(
                         text = " 天",
                         fontSize = 14.sp,
                         fontWeight = FontWeight.Normal,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        softWrap = false,
                         modifier = Modifier.padding(bottom = 4.dp)
                     )
                 }
@@ -1155,7 +1158,9 @@ fun SummaryMetricCard(
                 Text(
                     text = "${metric.label}变化",
                     fontSize = 13.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    softWrap = false
                 )
                 Spacer(modifier = Modifier.height(6.dp))
                 Row(verticalAlignment = Alignment.Bottom) {
@@ -1167,7 +1172,9 @@ fun SummaryMetricCard(
                         text = formattedChange,
                         fontSize = 32.sp,
                         fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onSurface
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                        softWrap = false
                     )
                     if (distinctDays > 0 && metric.unit.isNotEmpty()) {
                         Text(
@@ -1175,6 +1182,8 @@ fun SummaryMetricCard(
                             fontSize = 14.sp,
                             fontWeight = FontWeight.Normal,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            softWrap = false,
                             modifier = Modifier.padding(bottom = 4.dp)
                         )
                     }
@@ -1284,9 +1293,23 @@ fun ExtraInsightsCard(
 @Composable
 fun StatGridColumn(title: String, value: String, modifier: Modifier = Modifier) {
     Column(modifier = modifier, horizontalAlignment = Alignment.CenterHorizontally) {
-        Text(text = title, fontSize = 11.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(
+            text = title,
+            fontSize = 11.5.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            softWrap = false
+        )
         Spacer(modifier = Modifier.height(3.dp))
-        Text(text = value, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurface)
+        Text(
+            text = value,
+            fontSize = 12.5.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = MaterialTheme.colorScheme.onSurface,
+            maxLines = 1,
+            softWrap = false,
+            overflow = TextOverflow.Ellipsis
+        )
     }
 }
 
@@ -1458,6 +1481,10 @@ fun HistoryRecordsScreen(
     val members by viewModel.members.collectAsState()
     val selectedMemberId by viewModel.selectedMemberId.collectAsState()
 
+    LaunchedEffect(history.size, history.firstOrNull()?.measuredAtEpochMs) {
+        viewModel.markRecordsAsViewed()
+    }
+
     val dateFormat = remember { SimpleDateFormat("MM月dd日 HH:mm", Locale.getDefault()) }
     var measurementToDelete by remember { mutableStateOf<BodyMeasurement?>(null) }
     var rebindTargetMeasurement by remember { mutableStateOf<BodyMeasurement?>(null) }
@@ -1601,8 +1628,10 @@ fun ModernMeasurementCard(
             .fillMaxWidth()
             .clickable { onNavigateToDetail(measurement.id) },
         shape = RoundedCornerShape(12.dp),
-        colors = CardDefaults.cardColors(containerColor = Color.White),
-        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
+        ),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
     ) {
         Column(modifier = Modifier.padding(18.dp)) {
             Row(
@@ -1622,14 +1651,14 @@ fun ModernMeasurementCard(
                             text = String.format(Locale.getDefault(), "%.2f", measurement.weightKg),
                             fontSize = 30.sp,
                             fontWeight = FontWeight.Bold,
-                            color = Color(0xFF1F2937)
+                            color = MaterialTheme.colorScheme.onSurface
                         )
                         Text(
                             text = " kg",
                             fontSize = 14.sp,
                             fontWeight = FontWeight.Normal,
                             modifier = Modifier.padding(bottom = 4.dp),
-                            color = Color(0xFF6B7280)
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
                 }
@@ -1637,7 +1666,7 @@ fun ModernMeasurementCard(
                 IconButton(
                     onClick = onDelete,
                     colors = IconButtonDefaults.iconButtonColors(
-                        contentColor = Color(0xFF9CA3AF)
+                        contentColor = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 ) {
                     Icon(Icons.Default.Delete, contentDescription = "删除", modifier = Modifier.size(20.dp))
@@ -1650,9 +1679,9 @@ fun ModernMeasurementCard(
             val memberName = measurement.memberNameSnapshot
             Surface(
                 onClick = { onRebindClick?.invoke() },
-                color = if (memberName != null) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f) else Color(0xFFFFF7ED),
+                color = if (memberName != null) MaterialTheme.colorScheme.primaryContainer else Color(0xFFEA580C).copy(alpha = 0.15f),
                 shape = RoundedCornerShape(6.dp),
-                border = if (memberName == null) androidx.compose.foundation.BorderStroke(0.8.dp, Color(0xFFFDBA74)) else null
+                border = if (memberName == null) androidx.compose.foundation.BorderStroke(0.8.dp, Color(0xFFEA580C).copy(alpha = 0.4f)) else null
             ) {
                 Row(
                     modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
@@ -1661,14 +1690,14 @@ fun ModernMeasurementCard(
                     Icon(
                         if (memberName != null) Icons.Default.Person else Icons.Default.PersonAdd,
                         contentDescription = null,
-                        tint = if (memberName != null) MaterialTheme.colorScheme.primary else Color(0xFFEA580C),
+                        tint = if (memberName != null) MaterialTheme.colorScheme.onPrimaryContainer else Color(0xFFF97316),
                         modifier = Modifier.size(13.dp)
                     )
                     Spacer(modifier = Modifier.width(4.dp))
                     Text(
                         text = if (memberName != null) "成员: $memberName ▾" else "未匹配成员 (点击分配) ▾",
                         fontSize = 11.5.sp,
-                        color = if (memberName != null) MaterialTheme.colorScheme.primary else Color(0xFFEA580C),
+                        color = if (memberName != null) MaterialTheme.colorScheme.onPrimaryContainer else Color(0xFFF97316),
                         fontWeight = FontWeight.SemiBold
                     )
                 }
@@ -1699,8 +1728,8 @@ fun ModernMeasurementCard(
 @Composable
 fun HistoryMiniMetric(label: String, value: String, modifier: Modifier = Modifier) {
     Column(modifier = modifier) {
-        Text(text = label, fontSize = 11.sp, color = Color(0xFF9CA3AF))
-        Text(text = value, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = Color(0xFF1F2937))
+        Text(text = label, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(text = value, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurface)
     }
 }
 
@@ -1768,7 +1797,7 @@ fun MeasurementDetailScreen(
                 Spacer(modifier = Modifier.height(8.dp))
                 Surface(
                     onClick = { showRebindDialog = true },
-                    color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f),
+                    color = MaterialTheme.colorScheme.primaryContainer,
                     shape = RoundedCornerShape(16.dp)
                 ) {
                     Row(
@@ -1778,7 +1807,7 @@ fun MeasurementDetailScreen(
                         Icon(
                             Icons.Default.Person,
                             contentDescription = null,
-                            tint = MaterialTheme.colorScheme.primary,
+                            tint = MaterialTheme.colorScheme.onPrimaryContainer,
                             modifier = Modifier.size(16.dp)
                         )
                         Spacer(modifier = Modifier.width(6.dp))
@@ -1786,7 +1815,7 @@ fun MeasurementDetailScreen(
                             text = "成员: ${measurement.memberNameSnapshot ?: "未匹配"} (点击重新匹配) ▾",
                             style = MaterialTheme.typography.labelMedium,
                             fontWeight = FontWeight.SemiBold,
-                            color = MaterialTheme.colorScheme.primary
+                            color = MaterialTheme.colorScheme.onPrimaryContainer
                         )
                     }
                 }
@@ -1888,19 +1917,19 @@ fun RebindMemberDialog(
     AlertDialog(
         onDismissRequest = onDismiss,
         title = {
-            Text("重新匹配归属成员", fontWeight = FontWeight.Bold, fontSize = 18.sp, color = Color(0xFF1F2937))
+            Text("重新匹配归属成员", fontWeight = FontWeight.Bold, fontSize = 18.sp, color = MaterialTheme.colorScheme.onSurface)
         },
         text = {
             Column {
                 Text(
                     text = "将本次测量记录 (${String.format(Locale.getDefault(), "%.2f", measurement.weightKg)} kg) 重新归属给指定家庭成员，系统将按该成员的身高、年龄自动重新计算体脂率、BMI等各项身体指标，无需删除记录：",
                     fontSize = 12.5.sp,
-                    color = Color(0xFF4B5563),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                     lineHeight = 18.sp
                 )
                 Spacer(modifier = Modifier.height(14.dp))
                 if (members.isEmpty()) {
-                    Text("暂无可匹配的家庭成员", fontSize = 13.sp, color = Color(0xFF9CA3AF))
+                    Text("暂无可匹配的家庭成员", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 } else {
                     members.forEach { member ->
                         val isCurrent = measurement.memberId == member.id

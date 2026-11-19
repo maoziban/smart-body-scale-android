@@ -760,12 +760,14 @@ class BleScaleClient(private val context: Context) {
         } catch (e: Exception) {}
         bluetoothGatt = null
 
-        val hasLocationPerm = androidx.core.content.ContextCompat.checkSelfPermission(
-            context, android.Manifest.permission.ACCESS_FINE_LOCATION
-        ) == android.content.pm.PackageManager.PERMISSION_GRANTED ||
+        val hasLocationPerm = if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.S) {
             androidx.core.content.ContextCompat.checkSelfPermission(
-                context, android.Manifest.permission.ACCESS_COARSE_LOCATION
-            ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+                context, android.Manifest.permission.ACCESS_FINE_LOCATION
+            ) == android.content.pm.PackageManager.PERMISSION_GRANTED ||
+                androidx.core.content.ContextCompat.checkSelfPermission(
+                    context, android.Manifest.permission.ACCESS_COARSE_LOCATION
+                ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+        } else true
         val hasScanPerm = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
             androidx.core.content.ContextCompat.checkSelfPermission(
                 context, android.Manifest.permission.BLUETOOTH_SCAN
@@ -779,7 +781,7 @@ class BleScaleClient(private val context: Context) {
         if (!hasScanPerm || !hasLocationPerm) {
             AppLogger.w(TAG, "缺少蓝牙扫描或定位权限 (scanPerm=$hasScanPerm, locPerm=$hasLocationPerm)，系统可能静默拦截 BLE 广播结果！")
         }
-        if (!locEnabled) {
+        if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.S && !locEnabled) {
             AppLogger.w(TAG, "系统定位服务未开启 (locEnabled=false)，部分机型将无法收到 BLE 扫描结果！")
         }
         _connectionState.value = ConnectionState.SCANNING

@@ -72,29 +72,35 @@ class MainActivity : ComponentActivity() {
     private val requestPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { permissions ->
-        val btDenied = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            permissions[Manifest.permission.BLUETOOTH_SCAN] == false ||
-            permissions[Manifest.permission.BLUETOOTH_CONNECT] == false
-        } else {
-            false
-        }
-        val locGranted = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
-            ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        // 若权限请求被系统取消或中断（返回空 Map），不弹出误报提示
+        if (permissions.isEmpty()) return@registerForActivityResult
 
-        if (btDenied) {
-            android.widget.Toast.makeText(
-                this,
-                "附近设备（蓝牙）权限被拒绝，请前往「设置 → 应用 → 权限」开启，否则无法搜索体脂秤",
-                android.widget.Toast.LENGTH_LONG
-            ).show()
-        } else if (!locGranted) {
-            android.widget.Toast.makeText(
-                this,
-                "定位权限未开启，请前往「设置 → 应用 → 权限」开启位置信息权限，否则系统将屏蔽体脂秤蓝牙广播",
-                android.widget.Toast.LENGTH_LONG
-            ).show()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            val btGranted = ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_SCAN) == PackageManager.PERMISSION_GRANTED &&
+                ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED
+            if (!btGranted) {
+                android.widget.Toast.makeText(
+                    this,
+                    "附近设备（蓝牙）权限被拒绝，请前往「设置 → 应用 → 权限」开启，否则无法搜索体脂秤",
+                    android.widget.Toast.LENGTH_LONG
+                ).show()
+                return@registerForActivityResult
+            }
         } else {
-            // 权限已授予：若当前处于配对模式或尚未绑定设备，立即启动配对扫描；若已绑定设备则恢复常规扫描
+            val locGranted = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
+                ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+            if (!locGranted) {
+                android.widget.Toast.makeText(
+                    this,
+                    "定位权限未开启，请前往「设置 → 应用 → 权限」开启位置信息权限，否则系统将屏蔽体脂秤蓝牙广播",
+                    android.widget.Toast.LENGTH_LONG
+                ).show()
+                return@registerForActivityResult
+            }
+        }
+
+        // 权限已授予：若当前处于配对模式或尚未绑定设备，立即启动配对扫描；若已绑定设备则恢复常规扫描
+        if (::bleClient.isInitialized) {
             if (bleClient.isPairingMode || bleClient.lastPairedMac.isNullOrEmpty()) {
                 bleClient.startPairingScan()
             } else if (bleClient.connectionState.value == BleScaleClient.ConnectionState.IDLE) {
@@ -105,8 +111,6 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        
-        checkPermissions()
         
         database = Room.databaseBuilder(
             applicationContext,
@@ -121,6 +125,8 @@ class MainActivity : ComponentActivity() {
         webDavManager = WebDavManager(database.scaleDao())
         phicommS7Manager = PhicommS7Manager(applicationContext)
         zeppLifeSyncManager = ZeppLifeSyncManager(preferenceManager)
+
+        checkPermissions()
 
         // 确保系统中存在默认用户（"自己"），保证首次称重时 BMI 与身体成分正常计算
         lifecycleScope.launch {
@@ -221,24 +227,27 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun checkPermissions() {
-        val permissions = mutableListOf<String>()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            permissions.add(Manifest.permission.BLUETOOTH_SCAN)
-            permissions.add(Manifest.permission.BLUETOOTH_CONNECT)
-            // 未声明 neverForLocation 时需要定位权限以捕获厂商广播数据包
-            permissions.add(Manifest.permission.ACCESS_FINE_LOCATION)
-            permissions.add(Manifest.permission.ACCESS_COARSE_LOCATION)
+            val missing = listOf(
+                Manifest.permission.BLUETOOTH_SCAN,
+                Manifest.permission.BLUETOOTH_CONNECT
+            ).filter {
+                ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
+            }
+            if (missing.isNotEmpty()) {
+                requestPermissionLauncher.launch(missing.toTypedArray())
+            }
         } else {
-            permissions.add(Manifest.permission.ACCESS_FINE_LOCATION)
-            permissions.add(Manifest.permission.ACCESS_COARSE_LOCATION)
-        }
-        
-        val missing = permissions.filter {
-            ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
-        }
-        
-        if (missing.isNotEmpty()) {
-            requestPermissionLauncher.launch(missing.toTypedArray())
+            val locGranted = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
+                ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+            if (!locGranted) {
+                requestPermissionLauncher.launch(
+                    arrayOf(
+                        Manifest.permission.ACCESS_FINE_LOCATION,
+                        Manifest.permission.ACCESS_COARSE_LOCATION
+                    )
+                )
+            }
         }
     }
 

@@ -8,6 +8,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 
+import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 
 // 通过 Kotlin 委托属性为 Context 扩展 DataStore 实例，文件名 "settings"
@@ -73,6 +74,9 @@ class PreferenceManager(private val context: Context) {
 
     /** Zepp Life 云端 UserId */
     private val ZEPP_LIFE_USER_ID = stringPreferencesKey("zepp_life_user_id")
+
+    /** 上次查看历史记录明细的时间戳（用于右上角未读角标计数） */
+    private val LAST_VIEWED_RECORDS_TIME = longPreferencesKey("last_viewed_records_time")
 
     // ── 读取操作（Flow） ─────────────────────────────────────────────────────
 
@@ -140,6 +144,11 @@ class PreferenceManager(private val context: Context) {
     /** Zepp Life UserId */
     val zeppLifeUserId: Flow<String> = context.dataStore.data
         .map { preferences -> preferences[ZEPP_LIFE_USER_ID] ?: "" }
+
+    /** 上次查看历史记录明细的时间戳（毫秒），默认 0L */
+    val lastViewedRecordsTime: Flow<Long> = context.dataStore.data
+        .map { preferences -> preferences[LAST_VIEWED_RECORDS_TIME] ?: 0L }
+        .distinctUntilChanged()
 
     // ── 写入操作（挂起函数） ─────────────────────────────────────────────────
 
@@ -226,6 +235,13 @@ class PreferenceManager(private val context: Context) {
             preferences[ZEPP_LIFE_PASSWORD] = pass
             preferences[ZEPP_LIFE_APP_TOKEN] = token
             preferences[ZEPP_LIFE_USER_ID] = userId
+        }
+    }
+
+    /** 保存上次查看历史记录明细的时间戳 */
+    suspend fun saveLastViewedRecordsTime(timeMs: Long) {
+        context.dataStore.edit { preferences ->
+            preferences[LAST_VIEWED_RECORDS_TIME] = timeMs
         }
     }
 }
