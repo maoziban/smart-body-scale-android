@@ -80,4 +80,22 @@ class AfuB1Af45ParserTest {
         assertEquals(0.0, r!!.weightKg, 0.0)
         assertFalse(r.isStable)
     }
+
+    @Test
+    fun recordFrameParsesWeightAndImpedance() {
+        val recWithImp = MultiScalePacketParser.parseAfuB1Af45Record(hex(RECORD))
+        assertNotNull(recWithImp)
+        assertEquals(61.50, recWithImp!!.weightKg, 0.001)
+        assertTrue(recWithImp.isLocked)
+        assertEquals(563.0, recWithImp.impedanceOhm!!, 0.001)
+
+        // 80.10 kg（byte9 bit0 = 1 进位），无阻抗（[13..14] = 00 00）
+        val recNoImp = MultiScalePacketParser.parseAfuB1Af45Record(
+            hex("AF 45 00 ED 04 F7 6A E4 38 09 80 00 01 00 00 00 00 00 54 0C")
+        )
+        assertNotNull(recNoImp)
+        assertEquals(80.10, recNoImp!!.weightKg, 0.001)
+        assertTrue(recNoImp.isLocked)
+        assertNull(recNoImp.impedanceOhm)
+    }
 }

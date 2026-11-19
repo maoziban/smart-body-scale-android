@@ -551,14 +551,45 @@ object MultiScalePacketParser {
     }
 
     /**
+     * AF45 0x54 历史记录帧的解析结果。
+     *
+     * @property weightKg     记录的体重（kg）
+     * @property isLocked     [10] bit7 锁定标志
+     * @property impedanceOhm [13..14] 小端 16 位阻抗（Ω）；为 0 或超出 100..1500 Ω 时为 null
+     */
+    data class Af45Record(
+        val weightKg: Double,
+        val isLocked: Boolean,
+        val impedanceOhm: Double?
+    )
+
+    /**
      * 是否为 AF45 历史记录帧（byte 18 == 0x54）。
      *
-     * 结构：[2] 00、[3..6] Unix 时间戳 LE（秤内 RTC）、[7..8] 体重 LE g、[9] 08、[10] 0x80（已锁定）、[11..14] 未知。
+     * 结构：[2] 00、[3..6] Unix 时间戳 LE（秤内 RTC）、[7..8] 体重 LE g（+ [9] bit0 进位）、
+     *       [9] 08/09、[10] 0x80（已锁定）、[11..12] 00 01、[13..14] 阻抗 LE Ω（00 00 表示无阻抗）。
      * 它是秤内保存的**上一次**结果：踩秤前就会出现、测量中也会穿插，绝不能当作本次测量；
-     * 但测量结束后秤会连续只发此帧，[BleScaleClient] 据此判定"测量结束 / 已下秤"。
+     * 但测量结束后秤会连续只发此帧，[BleScaleClient] 据此判定"测量结束 / 已下秤"并在匹配本次锁定时提取阻抗。
      */
     fun isAfuB1Af45RecordFrame(data: ByteArray): Boolean =
         isValidAf45Frame(data) && (data[18].toInt() and 0xFF) == AF45_TYPE_RECORD
+
+    /**
+     * 解析 AF45 0x54 历史记录帧中的体重与阻抗（[13..14] 小端 16 位）。
+     * 仅在本次会话已测得实时体重且体重匹配时由 [BleScaleClient] 采信，避免误读上秤前的历史记录。
+     */
+    fun parseAfuB1Af45Record(data: ByteArray): Af45Record? {
+        if (!isAfuB1Af45RecordFrame(data)) return null
+        val rawWeight = (data[7].toInt() and 0xFF) or
+                        ((data[8].toInt() and 0xFF) shl 8) or
+                        ((data[9].toInt() and 0x01) shl 16)
+        val weightKg = rawWeight / 1000.0
+        if (weightKg < 3.0 || weightKg > 250.0) return null
+        val locked = (data[10].toInt() and 0x80) != 0
+        val rawImp = (data[13].toInt() and 0xFF) or ((data[14].toInt() and 0xFF) shl 8)
+        val impedance = if (rawImp in 100..1500) rawImp.toDouble() else null
+        return Af45Record(weightKg = weightKg, isLocked = locked, impedanceOhm = impedance)
+    }
 
     /**
      * 解析 AFU-BH-TZ-B1 的 AF 45 20 字节实时体重帧（byte 18 == 0x51）。

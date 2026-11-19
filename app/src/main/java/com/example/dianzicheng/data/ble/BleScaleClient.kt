@@ -932,6 +932,7 @@ class BleScaleClient(private val context: Context) {
         _isStable.value = false
         _impedance.value = 0.0
         af45RecordStreak = 0
+        af45HasLiveWeightInSession = false
     }
 
     // -------------------------------------------------------------------------
@@ -1177,6 +1178,9 @@ class BleScaleClient(private val context: Context) {
     /** AFU-B1 连续收到的 AF45 0x54 历史记录帧数；收到实时体重帧即清零。 */
     private var af45RecordStreak = 0
 
+    /** 当前连接会话是否已收到过有效实时体重（>= 3 kg），防止误读上秤前旧 0x54 记录里的阻抗。 */
+    private var af45HasLiveWeightInSession = false
+
     /** 连续多少帧 0x54 记录帧（约 700 ms 一帧）视为测量结束。 */
     private val AF45_RECORD_STREAK_END = 3
 
@@ -1286,18 +1290,37 @@ class BleScaleClient(private val context: Context) {
         val scaleResult = when {
             rawResult != null && rawResult.protocolName == MultiScalePacketParser.PROTOCOL_AFU_B1_AF45 -> {
                 af45RecordStreak = 0
+                if (rawResult.weightKg >= 3.0) af45HasLiveWeightInSession = true
                 rawResult
             }
             MultiScalePacketParser.isAfuB1Af45RecordFrame(data) -> {
                 af45RecordStreak++
-                if (af45RecordStreak == AF45_RECORD_STREAK_END) {
-                    MultiScalePacketParser.ParsedScaleData(
-                        weightKg = 0.0,
-                        isStable = false,
-                        impedanceOhm = null,
-                        protocolName = "${MultiScalePacketParser.PROTOCOL_AFU_B1_AF45} 测量结束"
-                    )
-                } else null
+                when {
+                    af45RecordStreak == AF45_RECORD_STREAK_END -> {
+                        af45HasLiveWeightInSession = false
+                        MultiScalePacketParser.ParsedScaleData(
+                            weightKg = 0.0,
+                            isStable = false,
+                            impedanceOhm = null,
+                            protocolName = "${MultiScalePacketParser.PROTOCOL_AFU_B1_AF45} 测量结束"
+                        )
+                    }
+                    // 仅在本次会话已测得并锁定实时体重、且 0x54 记录体重匹配时，提取 [13..14] 阻抗
+                    af45RecordStreak == 1 && af45HasLiveWeightInSession && _isStable.value && _weight.value >= 3.0 -> {
+                        val rec = MultiScalePacketParser.parseAfuB1Af45Record(data)
+                        if (rec != null && rec.isLocked && rec.impedanceOhm != null &&
+                            kotlin.math.abs(rec.weightKg - _weight.value) <= 0.15
+                        ) {
+                            MultiScalePacketParser.ParsedScaleData(
+                                weightKg = 0.0,
+                                isStable = true,
+                                impedanceOhm = rec.impedanceOhm,
+                                protocolName = "${MultiScalePacketParser.PROTOCOL_AFU_B1_AF45} 阻抗"
+                            )
+                        } else null
+                    }
+                    else -> null
+                }
             }
             else -> rawResult
         }
@@ -1456,6 +1479,8 @@ class BleScaleClient(private val context: Context) {
                 pendingSubscribeIndex = 0
                 qnProtocolType = null
                 qnFinishAckSent = false
+                af45RecordStreak = 0
+                af45HasLiveWeightInSession = false
 
                 // 区分是"正常测量完成后的设备休眠断开"还是"连接发起阶段的握手失败"
                 val wasPreviouslyConnected = _connectionState.value == ConnectionState.CONNECTED ||
